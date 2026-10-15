@@ -5,6 +5,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 
 import * as Electron from "electron";
 
@@ -334,12 +335,11 @@ export const make = Effect.gen(function* () {
   const clientSettings = yield* DesktopClientSettings.DesktopClientSettings;
   const electronApp = yield* ElectronApp.ElectronApp;
   const rendererHistory = yield* DesktopRendererHistory.DesktopRendererHistory;
-  // Window-side latch for the primary backend's readiness. Set by
-  // handleBackendReady (driven by the pool's onReady callback), cleared
-  // by handleBackendNotReady (driven by onShutdown). Only consumed by
-  // createMainIfBackendReady, which gates the post-readiness window
-  // open in development and the macOS "activate without windows" path.
+  // WSL-only startup and recovery still wait for readiness; native bootstrap
+  // can open the bundled renderer as soon as its endpoint is configured.
   const backendReadyRef = yield* Ref.make(false);
+  const mainWindowMutex = yield* Semaphore.make(1);
+  let mainWindowClosed = false;
   // The transient "Connecting to WSL" splash window, tracked separately so it
   // is never mistaken for the real main window.
   const splashWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
@@ -863,6 +863,7 @@ export const make = Effect.gen(function* () {
     }
 
     window.on("closed", () => {
+      mainWindowClosed = true;
       clearDevelopmentLoadRetry();
       clearBoundsPersist();
       void runPromise(electronWindow.clearMain(Option.some(window)));
@@ -873,6 +874,7 @@ export const make = Effect.gen(function* () {
 
   const createMain = Effect.gen(function* () {
     const window = yield* createWindow();
+    mainWindowClosed = false;
     yield* electronWindow.setMain(window);
     yield* logWindowInfo("main window created");
     return window;
@@ -884,7 +886,7 @@ export const make = Effect.gen(function* () {
       return existingWindow.value;
     }
     return yield* createMain;
-  }).pipe(Effect.withSpan("desktop.window.ensureMain"));
+  }).pipe(mainWindowMutex.withPermits(1), Effect.withSpan("desktop.window.ensureMain"));
 
   const revealOrCreateMain = Effect.gen(function* () {
     const window = yield* ensureMain;
@@ -901,9 +903,7 @@ export const make = Effect.gen(function* () {
 
   const createMainIfBackendReady = Effect.gen(function* () {
     if (yield* waitingForBackend) return;
-    const existingWindow = yield* currentMainWindow;
-    if (Option.isSome(existingWindow)) return;
-    yield* createMain;
+    yield* ensureMain;
   }).pipe(Effect.withSpan("desktop.window.createMainIfBackendReady"));
 
   const showConnectingSplash = Effect.gen(function* () {
@@ -1006,6 +1006,10 @@ export const make = Effect.gen(function* () {
           return;
         }
       }
+      if (mainWindowClosed) {
+        yield* ensureMain;
+        return;
+      }
       yield* createMainIfBackendReady;
     }).pipe(Effect.withSpan("desktop.window.activate")),
     createMainIfBackendReady,
@@ -1013,7 +1017,8 @@ export const make = Effect.gen(function* () {
     handleBackendReady: Effect.fn("desktop.window.handleBackendReady")(function* (httpBaseUrl) {
       yield* Ref.set(backendReadyRef, true);
       yield* logWindowInfo("backend ready", { source: "http", url: httpBaseUrl.href });
-      yield* createMainIfBackendReady;
+      // A cold start may finish after the user has already closed its window.
+      if (!mainWindowClosed) yield* createMainIfBackendReady;
     }),
     handleBackendNotReady: Ref.set(backendReadyRef, false).pipe(
       Effect.withSpan("desktop.window.handleBackendNotReady"),

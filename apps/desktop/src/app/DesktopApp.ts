@@ -253,6 +253,21 @@ const bootstrap = Effect.gen(function* () {
     }
     yield* primaryBackend.start;
     yield* logBootstrapInfo("bootstrap backend start requested");
+    // The bundled renderer can paint while the configured backend boots. WSL-only
+    // keeps its splash because preflight can replace the primary endpoint.
+    const config = yield* primaryBackend.currentConfig;
+    if (
+      !(settings.wslOnly === true && settings.wslBackendEnabled === true) &&
+      Option.isSome(config) &&
+      Option.isNone(config.value.preflightFailure) &&
+      !(yield* Ref.get(state.quitting))
+    ) {
+      yield* desktopWindow.ensureMain.pipe(
+        Effect.catch((error) =>
+          logStartupError("failed to open main window during backend startup", { error }),
+        ),
+      );
+    }
     yield* appActivation.start.pipe(
       Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
       Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),

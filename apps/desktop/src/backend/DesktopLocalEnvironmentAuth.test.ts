@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -67,6 +68,7 @@ describe("DesktopLocalEnvironmentAuth", () => {
           {
             id: PRIMARY_LOCAL_ENVIRONMENT_ID,
             label: Effect.succeed("Windows"),
+            waitForReady: () => Effect.succeed(true),
             currentConfig: Effect.succeedSome(config),
           },
         ]),
@@ -120,6 +122,7 @@ describe("DesktopLocalEnvironmentAuth", () => {
             {
               id: PRIMARY_LOCAL_ENVIRONMENT_ID,
               label: Effect.succeed("Windows"),
+              waitForReady: () => Effect.succeed(true),
               currentConfig: Effect.succeedSome({
                 ...config,
                 bootstrap: { ...config.bootstrap, desktopBootstrapSecret: "desktop-secret" },
@@ -167,10 +170,121 @@ describe("DesktopLocalEnvironmentAuth", () => {
       {
         id: PRIMARY_LOCAL_ENVIRONMENT_ID,
         label: Effect.succeed("Windows"),
+        waitForReady: () => Effect.succeed(true),
         currentConfig: Effect.succeedSome(config),
       },
     ]),
   } as unknown as DesktopBackendPool.DesktopBackendPool["Service"]);
+
+  const makeWaitingAuth = Effect.gen(function* () {
+    const readiness = yield* Deferred.make<boolean>();
+    const waiting = yield* Deferred.make<void>();
+    const configRef = yield* Ref.make(config);
+    const requests = yield* Ref.make<Array<{ url: string; credential: string | null }>>([]);
+    const poolLayer = Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
+      list: Effect.succeed([
+        {
+          id: PRIMARY_LOCAL_ENVIRONMENT_ID,
+          currentConfig: Ref.get(configRef).pipe(Effect.asSome),
+          waitForReady: () =>
+            Deferred.succeed(waiting, undefined).pipe(Effect.andThen(Deferred.await(readiness))),
+        },
+      ]),
+    } as unknown as DesktopBackendPool.DesktopBackendPool["Service"]);
+    const httpLayer = Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make((request) => {
+        const body =
+          request.body._tag === "Uint8Array" ? new TextDecoder().decode(request.body.body) : "";
+        return Ref.update(requests, (previous) => [
+          ...previous,
+          { url: request.url, credential: new URLSearchParams(body).get("subject_token") },
+        ]).pipe(Effect.as(tokenResponse(request)));
+      }),
+    );
+    const auth = yield* DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth.pipe(
+      Effect.provide(
+        DesktopLocalEnvironmentAuth.layer.pipe(Layer.provide(Layer.mergeAll(poolLayer, httpLayer))),
+      ),
+    );
+    return { auth, readiness, waiting, configRef, requests };
+  });
+
+  it.effect("waits through a slow startup and exchanges once using the ready backend config", () =>
+    Effect.gen(function* () {
+      const { auth, readiness, waiting, configRef, requests } = yield* makeWaitingAuth;
+      const first = yield* auth.getBearerToken.pipe(Effect.forkChild);
+      const second = yield* auth.getBearerToken.pipe(Effect.forkChild);
+      yield* Deferred.await(waiting);
+      yield* TestClock.adjust(Duration.seconds(30));
+      assert.deepStrictEqual(yield* Ref.get(requests), []);
+
+      // A restart can replace the endpoint and credential while startup is pending.
+      yield* Ref.set(configRef, {
+        ...config,
+        httpBaseUrl: new URL("http://127.0.0.1:4773"),
+        bootstrap: { ...config.bootstrap, desktopBootstrapToken: "replacement-token" },
+      });
+      yield* Deferred.succeed(readiness, true);
+
+      assert.strictEqual(yield* Fiber.join(first), "desktop-bearer-token");
+      assert.strictEqual(yield* Fiber.join(second), "desktop-bearer-token");
+      assert.deepStrictEqual(yield* Ref.get(requests), [
+        { url: "http://127.0.0.1:4773/oauth/token", credential: "replacement-token" },
+      ]);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("stops waiting without an HTTP exchange when the backend stops", () =>
+    Effect.gen(function* () {
+      const { auth, readiness, waiting, requests } = yield* makeWaitingAuth;
+      const pending = yield* auth.getBearerToken.pipe(Effect.flip, Effect.forkChild);
+      yield* Deferred.await(waiting);
+      yield* Deferred.succeed(readiness, false);
+
+      const error = yield* Fiber.join(pending);
+      assert.strictEqual(error._tag, "DesktopLocalEnvironmentAuthBackendNotConfiguredError");
+      assert.deepStrictEqual(yield* Ref.get(requests), []);
+    }),
+  );
+
+  it.effect("releases the auth lock when a readiness wait is interrupted", () =>
+    Effect.gen(function* () {
+      const { auth, readiness, waiting, requests } = yield* makeWaitingAuth;
+      const pending = yield* auth.getBearerToken.pipe(Effect.forkChild);
+      yield* Deferred.await(waiting);
+      yield* Fiber.interrupt(pending);
+      assert.deepStrictEqual(yield* Ref.get(requests), []);
+
+      yield* Deferred.succeed(readiness, true);
+      assert.strictEqual(yield* auth.getBearerToken, "desktop-bearer-token");
+      assert.strictEqual((yield* Ref.get(requests)).length, 1);
+    }),
+  );
+
+  it.effect("fails without an HTTP exchange when the primary backend is absent", () =>
+    Effect.gen(function* () {
+      const poolLayer = Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
+        list: Effect.succeed([]),
+      } as unknown as DesktopBackendPool.DesktopBackendPool["Service"]);
+      const httpLayer = Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make(() => Effect.die("Unexpected HTTP exchange")),
+      );
+      const error = yield* Effect.gen(function* () {
+        const auth = yield* DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth;
+        return yield* auth.getBearerToken.pipe(Effect.flip);
+      }).pipe(
+        Effect.provide(
+          DesktopLocalEnvironmentAuth.layer.pipe(
+            Layer.provide(Layer.mergeAll(poolLayer, httpLayer)),
+          ),
+        ),
+      );
+      assert.strictEqual(error._tag, "DesktopLocalEnvironmentAuthBackendNotConfiguredError");
+    }),
+  );
+
   // Answers the first `failures` exchanges with `failure`, then with a token.
   const makeExchange = (failures: number, failure: () => Response) =>
     Effect.gen(function* () {
