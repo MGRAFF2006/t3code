@@ -4,6 +4,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
@@ -186,8 +187,12 @@ describe("DesktopLocalEnvironmentAuth", () => {
         {
           id: PRIMARY_LOCAL_ENVIRONMENT_ID,
           currentConfig: Ref.get(configRef).pipe(Effect.asSome),
-          waitForReady: () =>
-            Deferred.succeed(waiting, undefined).pipe(Effect.andThen(Deferred.await(readiness))),
+          waitForReady: (timeout: Duration.Duration) =>
+            Deferred.succeed(waiting, undefined).pipe(
+              Effect.andThen(Deferred.await(readiness)),
+              Effect.timeoutOption(timeout),
+              Effect.map(Option.getOrElse(() => false)),
+            ),
         },
       ]),
     } as unknown as DesktopBackendPool.DesktopBackendPool["Service"]);
@@ -246,6 +251,29 @@ describe("DesktopLocalEnvironmentAuth", () => {
       assert.strictEqual(error._tag, "DesktopLocalEnvironmentAuthBackendNotConfiguredError");
       assert.deepStrictEqual(yield* Ref.get(requests), []);
     }),
+  );
+
+  it.effect("bounds readiness waiting and allows a new request after backend recovery", () =>
+    Effect.gen(function* () {
+      const { auth, readiness, waiting, requests } = yield* makeWaitingAuth;
+      const settled = yield* Deferred.make<void>();
+      const pending = yield* auth.getBearerToken.pipe(
+        Effect.flip,
+        Effect.ensuring(Deferred.succeed(settled, undefined)),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(waiting);
+      yield* TestClock.adjust(Duration.minutes(2));
+
+      assert.isTrue(yield* Deferred.isDone(settled));
+      const error = yield* Fiber.join(pending);
+      assert.strictEqual(error._tag, "DesktopLocalEnvironmentAuthBackendNotConfiguredError");
+      assert.deepStrictEqual(yield* Ref.get(requests), []);
+
+      yield* Deferred.succeed(readiness, true);
+      assert.strictEqual(yield* auth.getBearerToken, "desktop-bearer-token");
+      assert.strictEqual((yield* Ref.get(requests)).length, 1);
+    }).pipe(Effect.provide(TestClock.layer())),
   );
 
   it.effect("releases the auth lock when a readiness wait is interrupted", () =>

@@ -338,6 +338,7 @@ export const make = Effect.gen(function* () {
   // WSL-only startup and recovery still wait for readiness; native bootstrap
   // can open the bundled renderer as soon as its endpoint is configured.
   const backendReadyRef = yield* Ref.make(false);
+  let backendHasBeenReady = false;
   const mainWindowMutex = yield* Semaphore.make(1);
   let mainWindowClosed = false;
   // The transient "Connecting to WSL" splash window, tracked separately so it
@@ -1006,7 +1007,7 @@ export const make = Effect.gen(function* () {
           return;
         }
       }
-      if (mainWindowClosed) {
+      if (mainWindowClosed && !backendHasBeenReady) {
         yield* ensureMain;
         return;
       }
@@ -1016,6 +1017,7 @@ export const make = Effect.gen(function* () {
     showConnectingSplash,
     handleBackendReady: Effect.fn("desktop.window.handleBackendReady")(function* (httpBaseUrl) {
       yield* Ref.set(backendReadyRef, true);
+      backendHasBeenReady = true;
       yield* logWindowInfo("backend ready", { source: "http", url: httpBaseUrl.href });
       // A cold start may finish after the user has already closed its window.
       if (!mainWindowClosed) yield* createMainIfBackendReady;

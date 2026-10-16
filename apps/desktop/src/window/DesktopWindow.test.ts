@@ -801,6 +801,45 @@ describe("DesktopWindow", () => {
     }),
   );
 
+  for (const closeBeforeStop of [true, false]) {
+    it.effect(
+      `waits for a previously ready backend on activation when closed ${closeBeforeStop ? "before" : "after"} it stops`,
+      () =>
+        Effect.gen(function* () {
+          const fakeWindow = makeFakeBrowserWindow();
+          const createCount = yield* Ref.make(0);
+          const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+          const cleared = yield* Deferred.make<void>();
+          const layer = layerTest({
+            window: fakeWindow.window,
+            createCount,
+            mainWindow,
+            onClearMain: Deferred.succeed(cleared, undefined).pipe(Effect.asVoid),
+          });
+
+          yield* Effect.gen(function* () {
+            const desktopWindow = yield* DesktopWindow.DesktopWindow;
+            yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+            if (!closeBeforeStop) yield* desktopWindow.handleBackendNotReady;
+            const closed = fakeWindow.windowListeners.get("closed");
+            if (!closed) return yield* Effect.die("window closed listener was not registered");
+            closed();
+            yield* Deferred.await(cleared);
+            if (closeBeforeStop) yield* desktopWindow.handleBackendNotReady;
+
+            yield* desktopWindow.activate;
+            assert.equal(yield* Ref.get(createCount), 1);
+            assert.isTrue(Option.isNone(yield* Ref.get(mainWindow)));
+
+            yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+            yield* desktopWindow.activate;
+            assert.equal(yield* Ref.get(createCount), 2);
+            assert.strictEqual(Option.getOrThrow(yield* Ref.get(mainWindow)), fakeWindow.window);
+          }).pipe(Effect.provide(layer));
+        }),
+    );
+  }
+
   it.effect("retries a failed early main window creation when the backend becomes ready", () =>
     Effect.gen(function* () {
       const main = makeFakeBrowserWindow();

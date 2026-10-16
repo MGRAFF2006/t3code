@@ -16,6 +16,8 @@ import * as HttpClient from "effect/http/HttpClient";
 
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 
+const BACKEND_READINESS_TIMEOUT = Duration.minutes(2);
+
 // A loopback /oauth/token exchange can fail transiently while the backend
 // settles (a 502-504, a refused or reset connection, a timeout). Retry those
 // for as long as the renderer's own bootstrap does; a rejected credential or a
@@ -85,7 +87,7 @@ export const make = Effect.gen(function* () {
         const instances = yield* pool.list;
         const primary = instances.find((instance) => instance.id === PRIMARY_LOCAL_ENVIRONMENT_ID);
         // The bundled renderer can request auth before the backend finishes starting.
-        if (primary === undefined || !(yield* primary.waitForReady(Duration.infinity))) {
+        if (primary === undefined || !(yield* primary.waitForReady(BACKEND_READINESS_TIMEOUT))) {
           return yield* new DesktopLocalEnvironmentAuthBackendNotConfiguredError();
         }
         const configOption = yield* primary.currentConfig;
