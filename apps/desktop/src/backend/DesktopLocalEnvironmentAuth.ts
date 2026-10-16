@@ -18,10 +18,6 @@ import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 
 const BACKEND_READINESS_TIMEOUT = Duration.minutes(2);
 
-// A loopback /oauth/token exchange can fail transiently while the backend
-// settles (a 502-504, a refused or reset connection, a timeout). Retry those
-// for as long as the renderer's own bootstrap does; a rejected credential or a
-// server error is final.
 const BOOTSTRAP_TRANSIENT_RETRY_TIMEOUT = Duration.seconds(15);
 const BOOTSTRAP_TRANSIENT_RETRY_INTERVAL = Duration.millis(500);
 const TRANSIENT_BOOTSTRAP_STATUS_CODES = new Set([502, 503, 504]);
@@ -119,7 +115,6 @@ export const make = Effect.gen(function* () {
             while: isTransientBearerBootstrapError,
             schedule: Schedule.spaced(BOOTSTRAP_TRANSIENT_RETRY_INTERVAL),
           }),
-          // Bounds the attempts and any request still in flight at the deadline.
           Effect.timeout(BOOTSTRAP_TRANSIENT_RETRY_TIMEOUT),
           Effect.mapError(
             (cause) =>
