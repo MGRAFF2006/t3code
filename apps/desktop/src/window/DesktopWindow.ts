@@ -938,6 +938,8 @@ export const make = Effect.gen(function* () {
         yield* electronWindow.reveal(existingWindow.value);
         return;
       }
+      const reopenDuringStartup = mainWindowClosed && !backendHasBeenReady;
+      mainWindowClosed = false;
       const backendReady = yield* Ref.get(backendReadyRef);
       if (!backendReady) {
         const splash = yield* Ref.get(splashWindowRef);
@@ -946,7 +948,7 @@ export const make = Effect.gen(function* () {
           return;
         }
       }
-      if (mainWindowClosed && !backendHasBeenReady) {
+      if (reopenDuringStartup) {
         yield* ensureMain;
         return;
       }

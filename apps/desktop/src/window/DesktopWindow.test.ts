@@ -827,7 +827,6 @@ describe("DesktopWindow", () => {
             assert.isTrue(Option.isNone(yield* Ref.get(mainWindow)));
 
             yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
-            yield* desktopWindow.activate;
             assert.equal(yield* Ref.get(createCount), 2);
             assert.strictEqual(Option.getOrThrow(yield* Ref.get(mainWindow)), fakeWindow.window);
           }).pipe(Effect.provide(layer));
