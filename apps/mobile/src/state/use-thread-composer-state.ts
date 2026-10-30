@@ -264,7 +264,7 @@ export function useThreadComposerState() {
       projectedMessages: selectedThreadMessages,
     });
     if (pendingAcknowledgments.length === 0) return feed;
-    return appendPendingThreadMessages(feed, feed, pendingAcknowledgments).map((entry) =>
+    return appendPendingThreadMessages(feed, feed, pendingAcknowledgments, false).map((entry) =>
       entry.pendingMessage ? { ...entry, acknowledged: true } : entry,
     );
   })();

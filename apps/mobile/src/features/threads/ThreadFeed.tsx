@@ -332,6 +332,7 @@ export interface ThreadFeedProps {
   readonly worktreeSetup?: WorktreeSetupCardProps | null;
   readonly setupWorkingStartedAt?: string | null;
   readonly queuedMessages: ReadonlyArray<QueuedThreadMessage>;
+  readonly deliveryDeferred: boolean;
   readonly dispatchingMessageId: MessageId | null;
   readonly onEditPendingMessage: ((message: QueuedThreadMessage) => void) | null;
   readonly environmentId: EnvironmentId;
@@ -2173,6 +2174,7 @@ function useThreadFeedPresentation(
     ),
     props.feed,
     props.queuedMessages,
+    props.deliveryDeferred,
   );
 }
 

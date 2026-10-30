@@ -1375,6 +1375,7 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
               worktreeSetup={props.worktreeSetup}
               setupWorkingStartedAt={props.setupWorkingStartedAt}
               queuedMessages={props.queuedMessages}
+              deliveryDeferred={props.connectionStateLabel !== "connected"}
               dispatchingMessageId={props.dispatchingMessageId}
               // A native subagent has no composer to edit a pending message in;
               // Cancel on the edit banner would discard it.

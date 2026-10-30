@@ -45,7 +45,7 @@ describe("pending timeline messages", () => {
             ]
           : [],
       };
-      const entry = appendPendingThreadMessages([], [], [queued])[0]!;
+      const entry = appendPendingThreadMessages([], [], [queued], true)[0]!;
       expect(isCompactionCommandFeedEntry(entry)).toBe(false);
       expect(entry.pendingMessage).toEqual(queued);
       if (!withAttachment) {
@@ -64,9 +64,9 @@ describe("pending timeline messages", () => {
         worktreePath: null,
       },
     };
-    const prompt = appendPendingThreadMessages([], [], [queued])[0]!;
+    const prompt = appendPendingThreadMessages([], [], [queued], true)[0]!;
     const synthetic = { ...prompt, pendingMessage: undefined };
-    const result = appendPendingThreadMessages([synthetic], [synthetic], [queued]);
+    const result = appendPendingThreadMessages([synthetic], [synthetic], [queued], false);
     expect(result).toHaveLength(1);
     expect(result[0]?.pendingMessage).toEqual(queued);
     expect(result[0]?.acknowledged).toBe(false);
@@ -82,7 +82,12 @@ describe("pending timeline messages", () => {
     };
     const context = { version: 1 as const, records: [record] };
     const text = "[Checkout.tsx](t3-context://v1/mention/setup-file)";
-    const entries = appendPendingThreadMessages([], [], [{ ...pending("context"), text, context }]);
+    const entries = appendPendingThreadMessages(
+      [],
+      [],
+      [{ ...pending("context"), text, context }],
+      true,
+    );
     const entry = entries[0];
     expect(entry?.type).toBe("message");
     if (entry?.type !== "message") throw new Error("Expected a pending message");
@@ -101,17 +106,29 @@ describe("pending timeline messages", () => {
       [activity],
       [],
       [pending("first"), pending("second")],
+      true,
     );
     expect(entries.map((entry) => entry.id)).toEqual(["thinking", "first", "second"]);
     expect(entries[1]?.pendingMessage?.text).toBe("first");
   });
 
-  it("reuses the message id and suppresses the pending copy when delivery appears", () => {
+  it("waits for server routing online and suppresses the pending copy when delivery appears", () => {
     const queued = pending("sent");
-    const optimistic = appendPendingThreadMessages([], [], [queued])[0]!;
+    // Before intake and while a receipt is ahead of the stream, the server may still queue it.
+    expect(appendPendingThreadMessages([], [], [queued], false)).toEqual([]);
+    const acknowledged = selectPendingAcknowledgedMessages([{ ...queued, sequence: 50 }], {
+      threadKey: "env:thread",
+      queuedMessages: [],
+      sequence: 49,
+      projectedMessages: [],
+    });
+    expect(appendPendingThreadMessages([], [], acknowledged, false)).toEqual([]);
+    const optimistic = appendPendingThreadMessages([], [], [queued], true)[0]!;
     const delivered = { ...optimistic, pendingMessage: undefined };
-    expect(appendPendingThreadMessages([delivered], [delivered], [queued])).toEqual([delivered]);
-    expect(appendPendingThreadMessages([], [delivered], [queued])).toEqual([]);
+    expect(appendPendingThreadMessages([delivered], [delivered], [queued], false)).toEqual([
+      delivered,
+    ]);
+    expect(appendPendingThreadMessages([], [delivered], [queued], true)).toEqual([]);
   });
 
   it("stops showing an acknowledged message once the thread catches up, even when the feed hides it", () => {
@@ -128,7 +145,7 @@ describe("pending timeline messages", () => {
       projectedMessages: [{ id: echoed.messageId }],
     });
     expect(shown).toEqual([waiting]);
-    expect(appendPendingThreadMessages([], [], shown).map((entry) => entry.id)).toEqual([
+    expect(appendPendingThreadMessages([], [], shown, true).map((entry) => entry.id)).toEqual([
       "waiting",
     ]);
   });

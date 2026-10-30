@@ -77,19 +77,24 @@ export function appendPendingThreadMessages(
   presentedFeed: ReadonlyArray<ThreadFeedEntry>,
   feed: ReadonlyArray<ThreadFeedEntry>,
   queuedMessages: ReadonlyArray<QueuedThreadMessage>,
+  deliveryDeferred: boolean,
 ): ReadonlyArray<PendingThreadFeedEntry> {
-  if (queuedMessages.length === 0) return presentedFeed;
+  // Connected follow-ups wait for the server feed; a receipt alone can still mean queued.
+  const pendingMessages = queuedMessages.filter(
+    (message) => deliveryDeferred || message.creation !== undefined,
+  );
+  if (pendingMessages.length === 0) return presentedFeed;
   const deliveredIds = new Set(
     feed.flatMap((entry) => (entry.type === "message" ? [entry.message.id] : [])),
   );
   return [
     ...presentedFeed.map((entry): PendingThreadFeedEntry => {
-      const pendingMessage = queuedMessages.find(
+      const pendingMessage = pendingMessages.find(
         (message) => message.creation !== undefined && message.messageId === entry.id,
       );
       return pendingMessage ? { ...entry, pendingMessage, acknowledged: false } : entry;
     }),
-    ...queuedMessages
+    ...pendingMessages
       .filter((message) => !deliveredIds.has(message.messageId))
       .map((pendingMessage): PendingThreadFeedEntry => ({
         type: "message",
