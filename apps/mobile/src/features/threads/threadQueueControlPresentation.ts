@@ -1,6 +1,17 @@
 import type { EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { isAttachmentOnlyBootstrapPrompt } from "@t3tools/shared/composerContextReferences";
+import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
+
+export function selectLocalThreadQueueMessages(
+  messages: ReadonlyArray<QueuedThreadMessage>,
+  acceptedMessages: ReadonlyArray<{ readonly id: string }> | undefined,
+): ReadonlyArray<QueuedThreadMessage> {
+  const acceptedIds = new Set(acceptedMessages?.map((message) => message.id));
+  return messages.filter(
+    (message) => message.creation === undefined && !acceptedIds.has(message.messageId),
+  );
+}
 
 export const REMOVE_QUEUED_MESSAGE_ACCESSIBILITY_LABEL = "Remove queued message";
 

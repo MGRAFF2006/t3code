@@ -797,7 +797,7 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
     devicePreviews.length > 0 ||
     browserTabs.tabs.length > 0 ||
     props.connectionStateLabel !== "connected" ||
-    props.queuedMessages.length > 0 ||
+    props.selectedThreadQueueCount > 0 ||
     props.selectedThreadFeed.some(
       (entry) => "acknowledged" in entry && entry.acknowledged === true,
     );
@@ -1225,8 +1225,7 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
     feedRef.current?.resetEndFollow();
     setAnchorMessageId(nextAnchorMessageId);
     composerEditorRef.current?.blur();
-    // The send enqueued the message optimistically, so it is in the feed or
-    // the queue by the next frame, once the new anchor has rendered.
+    // Existing threads follow the server feed; a creation prompt anchors locally.
     if (nextAnchorMessageId === messageId && contentPresentationKind === "ready") {
       requestAnimationFrame(() => {
         if (scope.aborted) return;
@@ -1484,7 +1483,7 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
                         threadId: props.selectedThread.id,
                       });
                     }}
-                    queuedCount={queuedCount}
+                    queuedCount={queuedCount + props.selectedThreadQueueCount}
                     onOpenQueue={() => {
                       Keyboard.dismiss();
                       navigation.navigate("ThreadQueue", {

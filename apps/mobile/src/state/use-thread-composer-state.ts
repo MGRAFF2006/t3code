@@ -53,6 +53,7 @@ import {
   selectPendingAcknowledgedMessages,
 } from "../features/threads/pending-thread-feed";
 import { threadAllowsProviderSwitch } from "./thread-provider-switching";
+import { selectLocalThreadQueueMessages } from "../features/threads/threadQueueControlPresentation";
 import { appAtomRegistry } from "../state/atom-registry";
 import { pendingThreadCreationMessage } from "./pending-thread-creation";
 import {
@@ -211,8 +212,9 @@ export function useThreadComposerState() {
     ? scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id)
     : null;
   const selectedThreadQueuedMessages = selectedThreadKey
-    ? (queuedMessagesByThreadKey[selectedThreadKey] ?? []).filter(
-        (message) => message.creation === undefined,
+    ? selectLocalThreadQueueMessages(
+        queuedMessagesByThreadKey[selectedThreadKey] ?? [],
+        selectedThreadProjection?.projection.messages,
       )
     : [];
   const feedbackSubmissions = selectedThreadKey
@@ -233,6 +235,12 @@ export function useThreadComposerState() {
       ? EMPTY_THREAD_SEQUENCE_ATOM
       : environmentThreadDetails.sequenceAtom(selectedThreadDetailRef),
   );
+  const pendingAcknowledgments = selectPendingAcknowledgedMessages(acknowledgedMessages, {
+    threadKey: selectedThreadKey,
+    queuedMessages: selectedThreadQueuedMessages,
+    sequence: selectedThreadSequence,
+    projectedMessages: selectedThreadMessages,
+  });
   const checkpointSummaries = useAtomValue(
     selectedThreadDetailRef === null
       ? EMPTY_CHECKPOINT_SUMMARIES_ATOM
@@ -257,12 +265,6 @@ export function useThreadComposerState() {
       checkpointSummaries,
       cache: feedCache,
     });
-    const pendingAcknowledgments = selectPendingAcknowledgedMessages(acknowledgedMessages, {
-      threadKey: selectedThreadKey,
-      queuedMessages: selectedThreadQueuedMessages,
-      sequence: selectedThreadSequence,
-      projectedMessages: selectedThreadMessages,
-    });
     if (pendingAcknowledgments.length === 0) return feed;
     return appendPendingThreadMessages(feed, feed, pendingAcknowledgments, false).map((entry) =>
       entry.pendingMessage ? { ...entry, acknowledged: true } : entry,
@@ -286,7 +288,10 @@ export function useThreadComposerState() {
         ? selectedThreadKey
         : queuedEditDraftKey(selectedThreadKey, queuedRunEdit.runId);
   const selectedDraft = useComposerDraftSettings(selectedThreadKey);
-  const selectedThreadQueueCount = selectedThreadQueuedMessages.length;
+  const selectedThreadQueueCount = selectLocalThreadQueueMessages(
+    [...selectedThreadQueuedMessages, ...pendingAcknowledgments],
+    selectedThreadMessages,
+  ).length;
   const selectedThread = selectedThreadShell;
   const modelSelection = selectedDraft.modelSelection ?? selectedThread?.modelSelection ?? null;
   const serverConfig = selectedEnvironmentRuntime?.serverConfig;

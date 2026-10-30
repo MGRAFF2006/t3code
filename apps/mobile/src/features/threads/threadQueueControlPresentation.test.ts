@@ -1,9 +1,43 @@
 import { formatAssistantCitationHref } from "@t3tools/shared/assistantCitations";
 import { describe, expect, it } from "vite-plus/test";
+import { CommandId, EnvironmentId, MessageId, ProjectId, ThreadId } from "@t3tools/contracts";
+import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 
-import { resolveThreadQueueRowControls } from "./threadQueueControlPresentation";
+import {
+  resolveThreadQueueRowControls,
+  selectLocalThreadQueueMessages,
+} from "./threadQueueControlPresentation";
 
 describe("threadQueueControlPresentation", () => {
+  it("keeps local retries visible until accepted without counting creation prompts or server copies", () => {
+    const retry: QueuedThreadMessage = {
+      environmentId: EnvironmentId.make("environment"),
+      threadId: ThreadId.make("thread"),
+      messageId: MessageId.make("retry"),
+      commandId: CommandId.make("retry"),
+      text: "Retry settings synchronization",
+      attachments: [],
+      createdAt: "2026-10-30T07:00:00.000Z",
+    };
+    const accepted = { ...retry, messageId: MessageId.make("accepted") };
+    const creation = {
+      ...retry,
+      messageId: MessageId.make("creation"),
+      creation: {
+        projectId: ProjectId.make("project"),
+        workspaceMode: "local" as const,
+        branch: "main",
+        worktreePath: null,
+      },
+    };
+    const outbox = [retry, accepted, creation];
+    expect(selectLocalThreadQueueMessages(outbox, undefined)).toEqual([retry, accepted]);
+    expect(selectLocalThreadQueueMessages(outbox, [{ id: accepted.messageId }])).toEqual([retry]);
+    expect(
+      selectLocalThreadQueueMessages(outbox, [{ id: accepted.messageId }, { id: retry.messageId }]),
+    ).toEqual([]);
+  });
+
   it.each([
     { busy: false, isEditing: false, expected: true },
     { busy: true, isEditing: false, expected: false },

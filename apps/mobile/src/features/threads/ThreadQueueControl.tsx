@@ -6,11 +6,12 @@ import {
 } from "@t3tools/client-runtime/queued-run-edit";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
-import type { ChatAttachment, EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
-import { Atom } from "effect/reactivity";
+import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import type { ChatAttachment, EnvironmentId, MessageId, RunId, ThreadId } from "@t3tools/contracts";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { Image } from "expo-image";
 import * as Haptics from "expo-haptics";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import ReanimatedSwipeable, {
@@ -20,6 +21,7 @@ import { Screen, ScreenStack, ScreenStackHeaderConfig } from "react-native-scree
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "../../components/ui/Button";
+import * as Dialog from "../../components/ui/Dialog";
 import { AndroidSheetHeader } from "../../components/ui/AndroidScreenHeader";
 import { AppText as Text } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
@@ -36,11 +38,20 @@ import { assetImageSource } from "../../lib/assetImageSource";
 import { beginQueuedRunEdit, useQueuedRunEdit } from "../../state/queued-run-edit";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { editPendingThreadMessage } from "../../state/edit-pending-thread-message";
+import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
+import { acknowledgedThreadMessagesAtom } from "../../state/acknowledged-thread-messages";
+import { selectPendingAcknowledgedMessages } from "./pending-thread-feed";
+import {
+  dispatchingQueuedMessageIdAtom,
+  useThreadOutboxMessages,
+} from "../../state/use-thread-outbox";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import {
   REMOVE_QUEUED_MESSAGE_ACCESSIBILITY_LABEL,
   buildCancelQueuedRunCommand,
   resolveThreadQueueRowControls,
+  selectLocalThreadQueueMessages,
 } from "./threadQueueControlPresentation";
 
 const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
@@ -127,6 +138,25 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const theme = useUniwindTheme();
   const workflow = useThreadQueueWorkflow(target);
   const threadKey = scopedThreadKey(target.environmentId, target.threadId);
+  const outbox = useThreadOutboxMessages();
+  const thread = useAtomValue(environmentThreadDetails.quietThreadAtom(target));
+  const localMessages = selectLocalThreadQueueMessages(
+    outbox[threadKey] ?? [],
+    thread?.projection.messages,
+  );
+  const acknowledgments = useAtomValue(acknowledgedThreadMessagesAtom);
+  const sequence = useAtomValue(environmentThreadDetails.sequenceAtom(target));
+  const pendingAcknowledgments = selectPendingAcknowledgedMessages(acknowledgments, {
+    threadKey,
+    queuedMessages: localMessages,
+    sequence,
+    projectedMessages: thread?.projection.messages,
+  });
+  const pendingMessages = selectLocalThreadQueueMessages(
+    [...localMessages, ...pendingAcknowledgments],
+    thread?.projection.messages,
+  );
+  const dispatchingMessageId = useAtomValue(dispatchingQueuedMessageIdAtom);
   const editing = useQueuedRunEdit(threadKey);
   const pendingRequests = useAtomValue(environmentThreadDetails.pendingRequestsAtom(target));
   const editBlockedReason = queuedRunEditBlockedReason({
@@ -137,18 +167,44 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const resume = useAtomCommand(threadEnvironment.resumeThreadQueue, "resume queue");
   const [resuming, setResuming] = useState(false);
   const [busyRunId, setBusyRunId] = useState<RunId | null>(null);
+  const [editingPendingId, setEditingPendingId] = useState<MessageId | null>(null);
   const busyRef = useRef(false);
   const queuedRuns = workflow?.queuedRuns ?? [];
+  const queueCount = queuedRuns.length + pendingMessages.length;
+  const dismissed = useRef(false);
+  const closeSheet = useCallback(() => {
+    if (dismissed.current) return;
+    dismissed.current = true;
+    navigation.goBack();
+  }, [navigation]);
 
-  const hadQueuedRuns = useRef(queuedRuns.length > 0);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- pops the navigator once the server-side queue empties after it had runs
+  const hadQueuedMessages = useRef(queueCount > 0);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes the sheet once both the local outbox and server queue empty
   useEffect(() => {
-    if (queuedRuns.length > 0) {
-      hadQueuedRuns.current = true;
+    if (queueCount > 0) {
+      hadQueuedMessages.current = true;
       return;
     }
-    if (hadQueuedRuns.current) navigation.goBack();
-  }, [navigation, queuedRuns.length]);
+    if (hadQueuedMessages.current) closeSheet();
+  }, [closeSheet, queueCount]);
+
+  const editPending = async (message: QueuedThreadMessage) => {
+    if (busyRef.current || editBlockedReason !== null || editing !== null) return;
+    busyRef.current = true;
+    setEditingPendingId(message.messageId);
+    const result = await settlePromise(() => editPendingThreadMessage(message));
+    busyRef.current = false;
+    setEditingPendingId(null);
+    if (AsyncResult.isFailure(result)) {
+      const error = squashAtomCommandFailure(result);
+      Dialog.alert(
+        "Could not edit message",
+        error instanceof Error ? error.message : "Please try again.",
+      );
+    } else if (result.value) {
+      closeSheet();
+    }
+  };
 
   const act = async (runId: RunId, action: QueueAction) => {
     if (busyRef.current) return;
@@ -176,7 +232,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           ),
         }),
       );
-      navigation.goBack();
+      closeSheet();
       return;
     }
     if (action !== "steer" && action !== "remove") return;
@@ -215,7 +271,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           <Text className="text-sm text-foreground-muted">Queue paused</Text>
           <Button
             label="Resume queue"
-            disabled={resuming || busyRunId !== null}
+            disabled={resuming || busyRunId !== null || editingPendingId !== null}
             onPress={async () => {
               if (busyRef.current) return;
               busyRef.current = true;
@@ -227,17 +283,17 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           />
         </View>
       ) : null}
-      {editBlockedReason !== null && queuedRuns.length > 0 ? (
+      {editBlockedReason !== null && queueCount > 0 ? (
         <Text className="py-3 text-sm text-foreground-muted">{editBlockedReason}</Text>
       ) : null}
-      {queuedRuns.length === 0 ? (
+      {queueCount === 0 ? (
         <Text className="pt-6 text-center text-sm text-foreground-muted">
           No messages waiting in this queue.
         </Text>
       ) : null}
       {queuedRuns.map(({ run, text, attachments, context, message }, index) => {
         const controls = resolveThreadQueueRowControls({
-          busy: busyRunId !== null,
+          busy: busyRunId !== null || editingPendingId !== null,
           canPromoteToSteer: workflow?.canPromoteToSteer ?? false,
           canSendNow: workflow?.canSendNow ?? false,
           editBlocked: editBlockedReason !== null,
@@ -353,6 +409,36 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
               </View>
             </QueueRowSwipeable>
           </View>
+        );
+      })}
+      {pendingMessages.map((message) => {
+        const controls = resolveThreadQueueRowControls({
+          busy:
+            busyRunId !== null ||
+            editingPendingId !== null ||
+            message.messageId === dispatchingMessageId,
+          canPromoteToSteer: false,
+          canSendNow: false,
+          editBlocked:
+            editBlockedReason !== null || editing !== null || !localMessages.includes(message),
+          text: message.text,
+        });
+        return (
+          <Pressable
+            key={message.messageId}
+            accessibilityRole="button"
+            accessibilityLabel={`${controls.displayText || "Attachments"}, Pending`}
+            accessibilityHint={editBlockedReason ?? undefined}
+            disabled={!controls.canEdit}
+            onPress={() => void editPending(message)}
+            className="min-h-14 flex-row items-center gap-2.5 border-b border-border bg-sheet py-2.5 active:opacity-70"
+          >
+            <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={1}>
+              {controls.displayText ||
+                (message.attachments.length > 0 ? "Attachments" : "Pending message")}
+            </Text>
+            <Text className="text-2xs text-foreground-muted">Pending</Text>
+          </Pressable>
         );
       })}
     </ScrollView>
