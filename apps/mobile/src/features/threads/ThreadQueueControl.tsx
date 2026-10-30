@@ -173,7 +173,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const queueCount = queuedRuns.length + pendingMessages.length;
   const dismissed = useRef(false);
   const closeSheet = useCallback(() => {
-    if (dismissed.current) return;
+    if (dismissed.current || !navigation.isFocused()) return;
     dismissed.current = true;
     navigation.goBack();
   }, [navigation]);
