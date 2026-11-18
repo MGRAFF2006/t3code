@@ -25,7 +25,7 @@ vp run dev -- --pair 'PAIRING_URL'
 
 ## Use
 
-Press **Ctrl+P** for the command palette, **Ctrl+T** to select a thread, **Ctrl+N** for a new thread and **Ctrl+Q** to exit. Pickers support typing to filter, arrow keys, Enter and Escape. Multi-line forms apply with **Ctrl+Enter**; Enter inserts a line break.
+Press **Ctrl+P** for the command palette, **Ctrl+T** to select a thread, **Ctrl+N** for a new thread and **Ctrl+Q** to exit. Pickers support typing to filter, arrow keys, Enter and Escape. Multi-line forms apply with **Ctrl+S** or **F2**; Enter inserts a line break. Ctrl+Enter also applies when the terminal reports it separately.
 
 The chat surface provides project and thread selection, conversation history and live updates, message composition, model selection, interrupt, approvals and structured question responses. It uses T3's shared client runtime and the same server contracts as the other clients.
 

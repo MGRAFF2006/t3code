@@ -603,7 +603,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   function help() {
     showOutput(
       "Keyboard help",
-      "Ctrl+P   Commands and features\nCtrl+T   Switch thread\nCtrl+N   New thread\nCtrl+O   Choose model\nCtrl+A   Pending approvals and questions\nCtrl+K   Interrupt current turn\nCtrl+Q   Exit\nEnter    Send prompt\nShift+Enter   New line\nPageUp / PageDown   Scroll transcript\nEscape   Close result or dialog\n\nType /commands, /threads, /new, /models, /requests, /services or /help. Other provider slash commands are sent unchanged.\n\nService forms use JSON validated against the connected T3 contract. Ctrl+Enter executes the reviewed input. Streaming results stop when you close their view.",
+      "Ctrl+P   Commands and features\nCtrl+T   Switch thread\nCtrl+N   New thread\nCtrl+O   Choose model\nCtrl+A   Pending approvals and questions\nCtrl+K   Interrupt current turn\nCtrl+Q   Exit\nEnter    Send prompt\nShift+Enter   New line\nPageUp / PageDown   Scroll transcript\nEscape   Close result or dialog\n\nType /commands, /threads, /new, /models, /requests, /services or /help. Other provider slash commands are sent unchanged.\n\nService forms use JSON validated against the connected T3 contract. Ctrl+S or F2 executes the reviewed input. Streaming results stop when you close their view.",
     );
   }
   async function send() {

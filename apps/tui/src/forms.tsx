@@ -35,7 +35,12 @@ export function Form(props: FormProps) {
 
   useKeyboard((event) => {
     if (event.name === "escape" && !busy()) props.onCancel();
-    else if (event.name === "return" && (event.ctrl || !props.multiline)) void submit();
+    else if (
+      (event.ctrl && event.name === "s") ||
+      event.name === "f2" ||
+      (event.name === "return" && (event.ctrl || !props.multiline))
+    )
+      void submit();
     else return;
     event.preventDefault();
     event.stopPropagation();
@@ -75,7 +80,7 @@ export function Form(props: FormProps) {
         </text>
       </Show>
       <text marginTop={1} fg={theme.textMuted}>
-        {busy() ? "Working…" : `${props.multiline ? "ctrl+enter" : "enter"} apply · esc back`}
+        {busy() ? "Working…" : `${props.multiline ? "ctrl+s" : "enter"} apply · esc back`}
       </text>
     </Dialog>
   );
