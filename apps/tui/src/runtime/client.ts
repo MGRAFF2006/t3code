@@ -759,7 +759,6 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
           : {}),
       });
       const launched = result as { readonly threadId: string };
-      if (environmentId === destination) selectThread(launched.threadId);
       return launched.threadId;
     },
     send: async (

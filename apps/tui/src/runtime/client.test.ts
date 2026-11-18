@@ -285,6 +285,7 @@ describe("terminal client onboarding", () => {
               client.selectThread(threadA.thread.id);
             }
             yield* Effect.promise(() => client.createThread(projectB.id));
+            expect(client.snapshot().selectedThreadId).toBe(threadA.thread.id);
             expect(launched).toMatchObject({
               projectId: projectB.id,
               modelSelection: scenario === "preferred-new-thread" ? explicitModel : modelB,

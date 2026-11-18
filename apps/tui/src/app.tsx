@@ -435,7 +435,19 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
     void run(async () => {
       if (!(await beforeNavigate())) return;
       check();
-      await client().createThread(projectId);
+      const destination = state()?.environmentId;
+      const selected = state()?.selectedThreadId;
+      const origin = area();
+      const unchanged = () =>
+        state()?.environmentId === destination &&
+        state()?.selectedThreadId === selected &&
+        area() === origin;
+      const id = await client().createThread(projectId);
+      if (!unchanged() || !(await beforeNavigate()) || !unchanged()) {
+        notify("Thread created. Your current view was kept.");
+        return;
+      }
+      client().selectThread(id);
       setArea("chat");
       setFocus("main");
     });
