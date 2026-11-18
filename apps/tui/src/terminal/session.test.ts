@@ -60,8 +60,11 @@ function setup() {
       },
     ),
   };
+  const transport = { invoke: client.invoke, stream: client.stream };
+  const scopedClient = { ...client, captureTransport: () => transport };
   return {
-    client,
+    client: scopedClient,
+    transport,
     input,
     output,
     renderer,
@@ -99,10 +102,14 @@ describe("remote terminal handoff", () => {
     );
     await fixture.ready;
     fixture.emit(snapshot);
+    const currentDestination = vi.fn(async (...args: Parameters<typeof fixture.transport.invoke>) =>
+      fixture.transport.invoke(...args),
+    );
+    fixture.client.invoke = currentDestination;
     expect(fixture.renderer.externalOutputMode).toBe("passthrough");
     fixture.input.emit("data", Buffer.from("ä\x03"));
     await fixture.written;
-    expect(fixture.client.invoke).toHaveBeenCalledWith(WS_METHODS.terminalWrite, {
+    expect(fixture.transport.invoke).toHaveBeenCalledWith(WS_METHODS.terminalWrite, {
       threadId: "thread-1",
       terminalId: "tui",
       data: "\xc3\xa4\x03",
@@ -110,7 +117,7 @@ describe("remote terminal handoff", () => {
     });
     fixture.output.columns = 130;
     fixture.output.emit("resize");
-    expect(fixture.client.invoke).toHaveBeenCalledWith(WS_METHODS.terminalResize, {
+    expect(fixture.transport.invoke).toHaveBeenCalledWith(WS_METHODS.terminalResize, {
       threadId: "thread-1",
       terminalId: "tui",
       cols: 130,
@@ -125,7 +132,7 @@ describe("remote terminal handoff", () => {
     expect(fixture.output.write).toHaveBeenCalledWith("\x1b[32mremote output");
     fixture.input.emit("data", Buffer.from("echo x\r\x1d"));
     await session;
-    expect(fixture.client.invoke).toHaveBeenCalledWith(WS_METHODS.terminalWrite, {
+    expect(fixture.transport.invoke).toHaveBeenCalledWith(WS_METHODS.terminalWrite, {
       threadId: "thread-1",
       terminalId: "tui",
       data: "echo x\r",
@@ -133,12 +140,13 @@ describe("remote terminal handoff", () => {
     });
     expect(fixture.detach).toHaveBeenCalledOnce();
     expect(
-      fixture.client.invoke.mock.calls.some(([method]) => method === WS_METHODS.terminalClose),
+      fixture.transport.invoke.mock.calls.some(([method]) => method === WS_METHODS.terminalClose),
     ).toBe(false);
     expect(fixture.input.listenerCount("data")).toBe(0);
     expect(fixture.output.listenerCount("resize")).toBe(0);
     expect(fixture.renderer.externalOutputMode).toBe("capture-stdout");
     expect(fixture.renderer.resume).toHaveBeenCalledOnce();
+    expect(currentDestination).not.toHaveBeenCalled();
   });
 
   it("restores renderer ownership and raw input when the stream fails", async () => {

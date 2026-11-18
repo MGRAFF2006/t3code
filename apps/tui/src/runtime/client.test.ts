@@ -5,12 +5,18 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Layer from "effect/Layer";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Fiber from "effect/Fiber";
 import type { SshPasswordPrompt } from "@t3tools/ssh/auth";
 import * as ClientPlatform from "./platform.ts";
 import * as Option from "effect/Option";
 import { Atom, AsyncResult } from "effect/reactivity";
 import * as ShellState from "@t3tools/client-runtime/state/shell";
+import * as ServerState from "@t3tools/client-runtime/state/server";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
+import type { ServerConfig } from "@t3tools/contracts";
 import * as ThreadState from "@t3tools/client-runtime/state/threads";
 import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
@@ -134,150 +140,184 @@ describe("terminal client onboarding", () => {
       ),
   );
 
-  it.effect.each(["new-thread", "preferred-new-thread", "send-switch"] as const)(
-    "keeps model selection with the intended destination for %s",
-    (scenario) =>
-      Effect.acquireUseRelease(
-        Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-tui-model-"))),
-        (configDir) =>
-          Effect.gen(function* () {
-            const provider = ProviderInstanceId.make("codex");
-            const modelA = { instanceId: provider, model: "model-a" };
-            const modelB = { instanceId: provider, model: "model-b" };
-            const projectA = {
-              ...v2Project,
-              id: ProjectId.make("project-a"),
-              defaultModelSelection: modelA,
-            };
-            const projectB = {
-              ...v2Project,
-              id: ProjectId.make("project-b"),
-              defaultModelSelection: modelB,
-            };
-            const threadA = {
-              ...v2Projection,
-              thread: {
-                ...v2Projection.thread,
-                id: ThreadId.make("thread-a"),
-                projectId: projectA.id,
-                modelSelection: modelA,
-                runtimeMode: "approval-required" as const,
-              },
-            };
-            const threadB = {
-              ...v2Projection,
-              thread: {
-                ...v2Projection.thread,
-                id: ThreadId.make("thread-b"),
-                projectId: projectB.id,
-                modelSelection: modelB,
-                runtimeMode: "full-access" as const,
-                interactionMode: "plan" as const,
-              },
-            };
-            const shellFactory = ShellState.createEnvironmentShellAtoms;
-            using _shell = vi
-              .spyOn(ShellState, "createEnvironmentShellAtoms")
-              .mockImplementation((runtime) => ({
-                ...shellFactory(runtime),
-                stateValueAtom: () =>
-                  Atom.make({
-                    ...ShellState.EMPTY_SHELL_STATE,
-                    snapshot: Option.some({ ...v2ShellSnapshot, projects: [projectA, projectB] }),
+  it.effect.each([
+    "new-thread",
+    "preferred-new-thread",
+    "configured-defaults",
+    "send-switch",
+  ] as const)("keeps model selection with the intended destination for %s", (scenario) =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-tui-model-"))),
+      (configDir) =>
+        Effect.gen(function* () {
+          const provider = ProviderInstanceId.make("codex");
+          const modelA = { instanceId: provider, model: "model-a" };
+          const modelB = { instanceId: provider, model: "model-b" };
+          const projectA = {
+            ...v2Project,
+            id: ProjectId.make("project-a"),
+            defaultModelSelection: modelA,
+          };
+          const projectB = {
+            ...v2Project,
+            id: ProjectId.make("project-b"),
+            defaultModelSelection: scenario === "configured-defaults" ? null : modelB,
+          };
+          const threadA = {
+            ...v2Projection,
+            thread: {
+              ...v2Projection.thread,
+              id: ThreadId.make("thread-a"),
+              projectId: projectA.id,
+              modelSelection: modelA,
+              runtimeMode: "approval-required" as const,
+            },
+          };
+          const threadB = {
+            ...v2Projection,
+            thread: {
+              ...v2Projection.thread,
+              id: ThreadId.make("thread-b"),
+              projectId: projectB.id,
+              modelSelection: modelB,
+              runtimeMode: "full-access" as const,
+              interactionMode: "plan" as const,
+            },
+          };
+          const serverFactory = ServerState.createServerEnvironmentAtoms;
+          using _server = vi
+            .spyOn(ServerState, "createServerEnvironmentAtoms")
+            .mockImplementation((...args) => ({
+              ...serverFactory(...args),
+              configValueAtom: () =>
+                Atom.make(
+                  scenario === "configured-defaults"
+                    ? ({
+                        providers: [],
+                        environment: { label: "Configured server" },
+                        settings: {
+                          ...DEFAULT_SERVER_SETTINGS,
+                          defaultModelSelection: modelB,
+                          defaultRuntimeMode: "auto-accept-edits",
+                          defaultThreadEnvMode: "local",
+                        },
+                      } as unknown as ServerConfig)
+                    : null,
+                ),
+            }));
+          const shellFactory = ShellState.createEnvironmentShellAtoms;
+          using _shell = vi
+            .spyOn(ShellState, "createEnvironmentShellAtoms")
+            .mockImplementation((runtime) => ({
+              ...shellFactory(runtime),
+              stateValueAtom: () =>
+                Atom.make({
+                  ...ShellState.EMPTY_SHELL_STATE,
+                  snapshot: Option.some({ ...v2ShellSnapshot, projects: [projectA, projectB] }),
+                  status: "live" as const,
+                }),
+            }));
+          using _threads = vi
+            .spyOn(ThreadState, "createEnvironmentThreadStateAtoms")
+            .mockImplementation(() => ({
+              stateAtom: (_environmentId, id) =>
+                Atom.make(
+                  AsyncResult.success({
+                    ...ThreadState.EMPTY_ENVIRONMENT_THREAD_STATE,
+                    data: Option.some(id === threadA.thread.id ? threadA : threadB),
                     status: "live" as const,
                   }),
-              }));
-            using _threads = vi
-              .spyOn(ThreadState, "createEnvironmentThreadStateAtoms")
-              .mockImplementation(() => ({
-                stateAtom: (_environmentId, id) =>
-                  Atom.make(
-                    AsyncResult.success({
-                      ...ThreadState.EMPTY_ENVIRONMENT_THREAD_STATE,
-                      data: Option.some(id === threadA.thread.id ? threadA : threadB),
-                      status: "live" as const,
-                    }),
-                  ),
-              }));
-            let launched: unknown;
-            const bridgeFactory = RpcBridge.createRpcBridge;
-            using _transport = vi
-              .spyOn(RpcBridge, "createRpcBridge")
-              .mockImplementation((...args) => {
-                const bridge = bridgeFactory(...args);
-                return {
-                  ...bridge,
-                  invoke: async (method, payload) => {
-                    if (method !== ORCHESTRATION_V2_WS_METHODS.launchThread)
-                      return bridge.invoke(method, payload);
-                    launched = payload;
-                    return { threadId: threadB.thread.id, projection: threadB, resumed: false };
+                ),
+            }));
+          let launched: unknown;
+          const bridgeFactory = RpcBridge.createRpcBridge;
+          using _transport = vi
+            .spyOn(RpcBridge, "createRpcBridge")
+            .mockImplementation((...args) => {
+              const bridge = bridgeFactory(...args);
+              return {
+                ...bridge,
+                invoke: async (method, payload) => {
+                  if (method !== ORCHESTRATION_V2_WS_METHODS.launchThread)
+                    return bridge.invoke(method, payload);
+                  launched = payload;
+                  return { threadId: threadB.thread.id, projection: threadB, resumed: false };
+                },
+              };
+            });
+          let dispatched: StartThreadTurnInput | undefined;
+          const commandsFactory = ThreadState.createThreadEnvironmentAtoms;
+          using _commands = vi
+            .spyOn(ThreadState, "createThreadEnvironmentAtoms")
+            .mockImplementation((...args) => {
+              const original = commandsFactory(...args);
+              return {
+                ...original,
+                startTurn: {
+                  ...original.startTurn,
+                  run: async (_registry, target) => {
+                    dispatched = target.input;
+                    return AsyncResult.success({ sequence: 1 });
                   },
-                };
+                },
+              };
+            });
+          using _fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+            Response.json({
+              environmentId: "model-environment",
+              label: "Model server",
+              platform: { os: "linux", arch: "x64" },
+              serverVersion: "0.0.0-test",
+              orchestrationProtocolVersion: 0,
+              capabilities: {},
+            }),
+          );
+          const client = yield* Effect.promise(() =>
+            createTuiClient({ configDir, url: "http://model-server.invalid" }),
+          );
+          yield* Effect.addFinalizer(() => Effect.sync(() => client.close()));
+          client.selectThread(threadA.thread.id);
+          if (scenario !== "send-switch") {
+            const explicitModel = { ...modelA, model: "explicit-model" };
+            if (scenario === "preferred-new-thread") {
+              client.selectThread(null);
+              yield* Effect.promise(() => client.setModel(explicitModel));
+              client.selectThread(threadA.thread.id);
+            }
+            yield* Effect.promise(() => client.createThread(projectB.id));
+            expect(launched).toMatchObject({
+              projectId: projectB.id,
+              modelSelection: scenario === "preferred-new-thread" ? explicitModel : modelB,
+              ...(scenario === "configured-defaults"
+                ? { runtimeMode: "auto-accept-edits", workspaceStrategy: { type: "root" } }
+                : {}),
+            });
+          } else {
+            const getRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
+            using _random = vi
+              .spyOn(globalThis.crypto, "getRandomValues")
+              .mockImplementation((array) => {
+                client.selectThread(threadB.thread.id);
+                return getRandomValues(array);
               });
-            let dispatched: StartThreadTurnInput | undefined;
-            const commandsFactory = ThreadState.createThreadEnvironmentAtoms;
-            using _commands = vi
-              .spyOn(ThreadState, "createThreadEnvironmentAtoms")
-              .mockImplementation((...args) => {
-                const original = commandsFactory(...args);
-                return {
-                  ...original,
-                  startTurn: {
-                    ...original.startTurn,
-                    run: async (_registry, target) => {
-                      dispatched = target.input;
-                      return AsyncResult.success({ sequence: 1 });
-                    },
-                  },
-                };
-              });
-            using _fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
-              Response.json({
-                environmentId: "model-environment",
-                label: "Model server",
-                platform: { os: "linux", arch: "x64" },
-                serverVersion: "0.0.0-test",
-                orchestrationProtocolVersion: 0,
-                capabilities: {},
+            yield* Effect.promise(() =>
+              client.send("Message for A", {
+                dispatchMode: "queue",
+                context: { version: 1, records: [] },
               }),
             );
-            const client = yield* Effect.promise(() =>
-              createTuiClient({ configDir, url: "http://model-server.invalid" }),
-            );
-            yield* Effect.addFinalizer(() => Effect.sync(() => client.close()));
-            client.selectThread(threadA.thread.id);
-            if (scenario !== "send-switch") {
-              const explicitModel = { ...modelA, model: "explicit-model" };
-              if (scenario === "preferred-new-thread") {
-                client.selectThread(null);
-                yield* Effect.promise(() => client.setModel(explicitModel));
-                client.selectThread(threadA.thread.id);
-              }
-              yield* Effect.promise(() => client.createThread(projectB.id));
-              expect(launched).toMatchObject({
-                projectId: projectB.id,
-                modelSelection: scenario === "preferred-new-thread" ? explicitModel : modelB,
-              });
-            } else {
-              const getRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
-              using _random = vi
-                .spyOn(globalThis.crypto, "getRandomValues")
-                .mockImplementation((array) => {
-                  client.selectThread(threadB.thread.id);
-                  return getRandomValues(array);
-                });
-              yield* Effect.promise(() => client.send("Message for A"));
-              expect(dispatched).toMatchObject({
-                threadId: threadA.thread.id,
-                modelSelection: modelA,
-                runtimeMode: "approval-required",
-                interactionMode: "default",
-              });
-            }
-          }),
-        (directory) => Effect.promise(() => NodeFSP.rm(directory, { recursive: true })),
-      ),
+            expect(dispatched).toMatchObject({
+              threadId: threadA.thread.id,
+              dispatchMode: "queue",
+              message: { text: "Message for A", context: { version: 1, records: [] } },
+              modelSelection: modelA,
+              runtimeMode: "approval-required",
+              interactionMode: "default",
+            });
+          }
+        }),
+      (directory) => Effect.promise(() => NodeFSP.rm(directory, { recursive: true })),
+    ),
   );
 
   it.effect("waits for the UI password handler and cancels an outstanding prompt on close", () =>
@@ -318,3 +358,120 @@ describe("terminal client onboarding", () => {
     ),
   );
 });
+
+it.effect("keeps project creation on its original environment while UUID allocation waits", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(() =>
+      NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-tui-project-destination-")),
+    ),
+    (configDir) =>
+      Effect.gen(function* () {
+        using _fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+          const request = new Request(input);
+          if (new URL(request.url).pathname === "/api/auth/session")
+            return Response.json({
+              authenticated: true,
+              auth: {
+                policy: "remote-reachable",
+                bootstrapMethods: [],
+                sessionMethods: [],
+                sessionCookieName: "test-session",
+              },
+            });
+          return Response.json({
+            environmentId: request.url.includes("other-server")
+              ? "other-environment"
+              : "original-environment",
+            label: "Test server",
+            platform: { os: "linux", arch: "x64" },
+            serverVersion: "0.0.0-test",
+            orchestrationProtocolVersion: 0,
+            capabilities: {},
+          });
+        });
+        const other = yield* Effect.promise(() =>
+          createTuiClient({
+            configDir,
+            url: "http://other-server.invalid",
+            token: "test-other-token",
+          }),
+        );
+        other.close();
+        const entered = yield* Deferred.make<void>();
+        const resume = yield* Deferred.make<void>();
+        let pauseUuid = false;
+        const secure = SecureRandom.make((size) =>
+          globalThis.crypto.getRandomValues(new Uint8Array(size)),
+        );
+        const delayed = ((options?: { format?: "string" | "bytes" }) =>
+          Effect.gen(function* () {
+            if (pauseUuid) {
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(resume);
+            }
+            return yield* options?.format === "bytes"
+              ? secure.uuidV4({ format: "bytes" })
+              : secure.uuidV4();
+          })) as typeof secure.uuidV4;
+        const platformFactory = ClientPlatform.createClientLayer;
+        using _platform = vi
+          .spyOn(ClientPlatform, "createClientLayer")
+          .mockImplementation(async (...args) => {
+            const original = await platformFactory(...args);
+            return {
+              ...original,
+              layer: Layer.merge(
+                original.layer,
+                Layer.succeed(SecureRandom.SecureRandom, { ...secure, uuidV4: delayed }),
+              ),
+            };
+          });
+        let createdIn: string | undefined;
+        const heartbeat = Atom.make(0);
+        let changeHeartbeat = (_value: number): void => {
+          throw new Error("No captured transport.");
+        };
+        const bridgeFactory = RpcBridge.createRpcBridge;
+        using _transport = vi.spyOn(RpcBridge, "createRpcBridge").mockImplementation((...args) => {
+          const original = bridgeFactory(...args);
+          return {
+            ...original,
+            invoke: async (method, payload) => {
+              if (method !== WS_METHODS.projectsMutate) return original.invoke(method, payload);
+              createdIn = args[2]();
+              return {};
+            },
+            stream: (_method, _input, onValue) => {
+              changeHeartbeat = (value) => args[1].set(heartbeat, value);
+              return args[3](heartbeat, onValue);
+            },
+          };
+        });
+        const client = yield* Effect.promise(() =>
+          createTuiClient({ configDir, url: "http://original-server.invalid" }),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => client.close()));
+        const received: number[] = [];
+        const detach = client
+          .captureTransport()
+          .stream(WS_METHODS.terminalAttach, {}, (value) => received.push(Number(value)));
+        pauseUuid = true;
+        const creating = yield* Effect.forkChild(
+          Effect.promise(() => client.createProject("/workspace/original", "Original")),
+        );
+        yield* Deferred.await(entered);
+        yield* Effect.promise(() => client.selectEnvironment("other-environment"));
+        pauseUuid = false;
+        yield* Deferred.succeed(resume, undefined);
+        yield* Fiber.join(creating);
+        expect(createdIn).toBe("original-environment");
+        expect(client.snapshot().environmentId).toBe("other-environment");
+        changeHeartbeat(1);
+        expect(received).toEqual([0, 1]);
+        detach();
+        changeHeartbeat(2);
+        expect(received).toEqual([0, 1]);
+      }),
+    (directory) => Effect.promise(() => NodeFSP.rm(directory, { recursive: true })),
+  ),
+);

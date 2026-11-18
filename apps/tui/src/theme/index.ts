@@ -1,15 +1,60 @@
+import {
+  T3_CODE_DARK_THEME_COLORS,
+  T3_CODE_LIGHT_THEME_COLORS,
+} from "@t3tools/shared/themePalettes";
+import { createSignal } from "solid-js";
 import source from "./assets/opencode.json" with { type: "json" };
 
-type ThemeMode = "dark" | "light";
+export type ThemeMode = "dark" | "light";
 
 export function resolveTheme(mode: ThemeMode) {
   const definitions: Record<string, string> = source.defs;
-  return Object.fromEntries(
+  const syntax = Object.fromEntries(
     Object.entries(source.theme).map(([name, value]) => {
       const color = value[mode];
       return [name, definitions[color] ?? color];
     }),
   ) as { [Name in keyof typeof source.theme]: string };
+  const colors = mode === "dark" ? T3_CODE_DARK_THEME_COLORS : T3_CODE_LIGHT_THEME_COLORS;
+  return {
+    ...syntax,
+    primary: colors.accent,
+    secondary: colors.focus,
+    accent: colors.accent,
+    error: colors.error,
+    warning: colors.warning,
+    text: colors.text,
+    textMuted: colors.textMuted,
+    background: colors.canvas,
+    backgroundPanel: colors.surface,
+    backgroundElement: colors.input,
+    border: colors.border,
+    borderActive: colors.focus,
+    borderSubtle: colors.toolbarBorder,
+    sidebar: colors.sidebar,
+    sidebarSelected: colors.sidebarRowSelected,
+    message: colors.messageSurface,
+    markdownHeading: colors.text,
+    markdownStrong: colors.text,
+    markdownLink: colors.accent,
+  };
 }
 
-export const theme = resolveTheme("dark");
+const palettes = { dark: resolveTheme("dark"), light: resolveTheme("light") };
+const [mode, setMode] = createSignal<ThemeMode>("dark");
+export const themeMode = mode;
+export function setTheme(value: ThemeMode) {
+  setMode(value);
+}
+export const theme = Object.defineProperties(
+  {} as ReturnType<typeof resolveTheme>,
+  Object.fromEntries(
+    Object.keys(palettes.dark).map((key) => [
+      key,
+      {
+        enumerable: true,
+        get: () => palettes[mode()][key as keyof typeof palettes.dark],
+      },
+    ]),
+  ),
+);

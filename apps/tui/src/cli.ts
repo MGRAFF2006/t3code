@@ -45,10 +45,10 @@ Usage: t3-tui [--connect URL] [--pair PAIRING_URL] [--thread ID]
   --pair URL         Pair using a fresh server pairing URL
   --config-dir DIR   Store terminal client connections in DIR
   --thread ID        Open a thread after connecting
-  --demo             Explore the interface with offline example data
+  --demo             Explore the interface with offline interface
   --help, -h         Print this help
 
 T3_TUI_URL provides the default server URL. T3_TUI_TOKEN supplies an existing
 bearer credential without putting it in shell history. Press Ctrl+P for commands,
-Ctrl+T for threads, Ctrl+N for a new thread, and Ctrl+Q to exit.
+Ctrl+K for threads, Ctrl+T for the terminal, Ctrl+N for a new thread, and Ctrl+Q to exit.
 `;

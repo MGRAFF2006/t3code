@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 
 import type { TuiClient, TuiSnapshot } from "../runtime/client.ts";
 
-type TerminalClient = Pick<TuiClient, "invoke" | "stream"> & {
+type TerminalClient = Pick<TuiClient, "captureTransport"> & {
   readonly snapshot: () => Pick<TuiSnapshot, "selectedThreadId">;
 };
 
@@ -33,6 +33,7 @@ export interface OpenTerminalOptions {
   readonly renderer: Pick<CliRenderer, "suspend" | "resume" | "externalOutputMode">;
   readonly cwd: string;
   readonly threadId?: string;
+  readonly terminalId?: string;
 }
 
 const resetScreen = "\x1b[0m\x1b[2J\x1b[H";
@@ -50,6 +51,7 @@ export async function runTerminalSession(
     renderer,
     cwd,
     threadId = client.snapshot().selectedThreadId ?? "",
+    terminalId = "tui",
   }: OpenTerminalOptions,
   { input, output }: TerminalIo,
 ): Promise<void> {
@@ -58,7 +60,8 @@ export async function runTerminalSession(
   if (!input.isTTY || !output.isTTY)
     throw new Error("The remote shell needs an interactive terminal.");
 
-  const session = { threadId, terminalId: "tui" };
+  const transport = client.captureTransport();
+  const session = { threadId, terminalId };
   const grid = () => ({
     cols: Math.min(1000, Math.max(1, output.columns ?? 80)),
     rows: Math.min(500, Math.max(1, output.rows ?? 24)),
@@ -92,7 +95,11 @@ export async function runTerminalSession(
       writes = writes
         .then(async () => {
           if (!cancelWrites)
-            await client.invoke(WS_METHODS.terminalWrite, { ...session, data: part, binary: true });
+            await transport.invoke(WS_METHODS.terminalWrite, {
+              ...session,
+              data: part,
+              binary: true,
+            });
         })
         .catch((error: unknown) => {
           writeFailure = error instanceof Error ? error : new Error(String(error));
@@ -115,7 +122,7 @@ export async function runTerminalSession(
   };
   const onResize = () => {
     if (active && ready)
-      void client.invoke(WS_METHODS.terminalResize, { ...session, ...grid() }).catch(fail);
+      void transport.invoke(WS_METHODS.terminalResize, { ...session, ...grid() }).catch(fail);
   };
 
   await renderer.suspend();
@@ -127,7 +134,7 @@ export async function runTerminalSession(
     input.on("data", onInput);
     output.on("resize", onResize);
     input.resume();
-    detach = client.stream(
+    detach = transport.stream(
       WS_METHODS.terminalAttach,
       {
         ...session,

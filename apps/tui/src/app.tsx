@@ -1,918 +1,1454 @@
-import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
+import type { ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
-import { createMemo, createSignal, For, onCleanup, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import {
-  DesktopSshEnvironmentTargetSchema,
+  CommandId,
+  type AssetResource,
+  WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
-  OrchestrationV2GetTurnItemResult,
-  type OrchestrationV2ProjectedTurnItem,
-  type OrchestrationV2UserInputQuestion,
-  type ProviderApprovalDecision,
+  ThreadId,
+  type OrchestrationV2Command,
+  type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as DateTime from "effect/DateTime";
 import * as SecureRandom from "effect/crypto/SecureRandom";
-import * as Schema from "effect/Schema";
-import { resolvePendingUserInputAnswer } from "@t3tools/client-runtime/state/pending-user-input";
-import { turnItemOutputText } from "@t3tools/client-runtime/work-log/item-detail";
-
-import { quickActions, serviceCategory, type TuiActionContext } from "./features/actions.ts";
-import { Form, SecretForm, type FormProps } from "./forms.tsx";
 import type { TuiClient, TuiSnapshot } from "./runtime/client.ts";
-import { services, type TuiService } from "./rpc/catalog.ts";
-import { theme } from "./theme/index.ts";
-import { Transcript } from "./transcript.tsx";
-import { openTerminal } from "./terminal/session.ts";
+import { presentThreadShell } from "@t3tools/client-runtime/state/models";
+import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
+import {
+  sortActiveThreadsByOrderKey,
+  sortPinnedThreadsByOrderKey,
+} from "@t3tools/client-runtime/state/thread-sort";
+import { newProjectActions } from "./projects/new-project.ts";
+import { projectActions } from "./projects/actions.ts";
+import { conversationSearch } from "./projects/search.ts";
+import { request } from "./rpc/request.ts";
+import { setTheme, theme } from "./theme/index.ts";
+import { SecretForm } from "./forms.tsx";
+import { FieldForm } from "./ui/field-form.tsx";
+import { Dialog } from "./ui/dialog.tsx";
 import { DialogSelect, type DialogSelectOption } from "./ui/dialog-select.tsx";
+import type { Area, Choice, FieldFormOptions, UiController } from "./ui/controller.ts";
+import { ConversationPanel } from "./conversation/panel.tsx";
+import { WorkspacePanel } from "./workspace/panel.tsx";
+import {
+  IssuesPanel,
+  PullRequestsPanel,
+  SchedulesPanel,
+  SettingsPanel,
+} from "./management/panels.tsx";
+import { DetailText } from "./presentation/text.tsx";
+import { BrowserPanel } from "./presentation/browser-panel.tsx";
+import { createTerminalCapabilities, terminalCapabilitiesReport } from "./presentation/terminal.ts";
+import { NativeImagePreview } from "./presentation/media.tsx";
+import { createHtmlPreview, openBrowser } from "./presentation/opener.ts";
+import { AdvancedPanel } from "./features/advanced.tsx";
+import { openTerminal } from "./terminal/session.ts";
 
-interface Choice {
-  title: string;
-  description?: string;
-  category?: string;
-  run: () => void;
-}
 type Modal =
-  | { kind: "picker"; title: string; options: DialogSelectOption<() => void>[] }
-  | { kind: "form"; props: FormProps }
-  | { kind: "secret"; title: string; description: string; resolve: (value: string | null) => void };
-interface Output {
-  title: string;
-  text: string;
-  stop?: () => void;
-}
-const decodeSshTarget = Schema.decodeUnknownSync(DesktopSshEnvironmentTargetSchema);
-const decodeItemDetail = Schema.decodeUnknownSync(Schema.toType(OrchestrationV2GetTurnItemResult));
-const draftKey = (state: TuiSnapshot | null) =>
-  `${state?.environmentId ?? ""}/${state?.selectedThreadId ?? ""}`;
+  | {
+      kind: "choose";
+      title: string;
+      options: DialogSelectOption<() => void>[];
+      onCancel?: () => void;
+    }
+  | { kind: "form"; options: FieldFormOptions }
+  | { kind: "secret"; description: string; resolve: (value: string | null) => void }
+  | { kind: "text"; title: string; content: string; language?: string | undefined }
+  | { kind: "image"; label: string; resource: AssetResource; environmentId: string | null };
+type ThreadFilter = "active" | "all" | "settled" | "snoozed" | "archived";
+const destinations: { area: Area; title: string; shortcut: string }[] = [
+  { area: "chat", title: "Threads", shortcut: "1" },
+  { area: "workspace", title: "Workspace", shortcut: "2" },
+  { area: "pull-requests", title: "Pull requests", shortcut: "3" },
+  { area: "issues", title: "Issues", shortcut: "4" },
+  { area: "schedules", title: "Scheduled tasks", shortcut: "5" },
+  { area: "settings", title: "Settings", shortcut: "6" },
+  { area: "browser", title: "Browser", shortcut: "7" },
+];
 
 export function App(props: { client: TuiClient | null; demo?: boolean; onExit: () => void }) {
   const dimensions = useTerminalDimensions();
   const renderer = useRenderer();
-  const [snapshot, setSnapshot] = createSignal<TuiSnapshot | null>(
-    props.client?.snapshot() ?? null,
-  );
-  const [modal, setModal] = createSignal<Modal | null>(null);
-  const [output, setOutput] = createSignal<Output | null>(null);
-  const [notice, setNotice] = createSignal<string | null>(null);
-  const [failure, setFailure] = createSignal(false);
+  const capabilities = createTerminalCapabilities(renderer);
+  const [state, setState] = createSignal<TuiSnapshot | null>(props.client?.snapshot() ?? null);
+  const [area, setArea] = createSignal<Area>("chat");
+  const [focus, setFocus] = createSignal<"sidebar" | "main" | "workspace">("main");
+  const [sidebar, setSidebar] = createSignal(true);
+  const [workspace, setWorkspace] = createSignal(false);
+  const [workspaceTab, setWorkspaceTab] = createSignal<"changes" | "files" | "git">("changes");
+  const [openPath, setOpenPath] = createSignal<string | undefined>(undefined, { equals: false });
+  const [modal, setModalState] = createSignal<Modal | null>(null);
+  let pendingNavigation: { modal: Modal; resolve: (approved: boolean) => void } | undefined;
+  function setModal(value: Modal | null) {
+    if (pendingNavigation && pendingNavigation.modal !== value) {
+      const pending = pendingNavigation;
+      pendingNavigation = undefined;
+      pending.resolve(false);
+    }
+    setModalState(value);
+  }
+  const [notice, setNotice] = createSignal<{ text: string; error: boolean } | null>(null);
   const [busy, setBusy] = createSignal(false);
-  const [draft, setDraft] = createSignal("");
-  let composer: TextareaRenderable | undefined;
-  let history: ScrollBoxRenderable | undefined;
-  let passwordPending: ((value: string | null) => void) | undefined;
+  const [search, setSearch] = createSignal("");
+  const [filter, setFilter] = createSignal<ThreadFilter>("active");
+  const [selectedRow, setSelectedRow] = createSignal(0);
+  const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set());
+  let sidebarScroll: ScrollBoxRenderable | undefined;
+  let outputScroll: ScrollBoxRenderable | undefined;
+  const htmlPreviews = new Set<() => Promise<void>>();
+  const navigationGuards = new Map<() => string | null, (() => void) | undefined>();
+  let operationCount = 0;
+  let pendingPassword: ((value: string | null) => void) | undefined;
+  const unsubscribe = props.client?.subscribe(setState);
+  const unsubscribePreferences = props.client?.subscribePreferences((value) =>
+    setTheme(value.theme),
+  );
   props.client?.setPasswordPrompt(
-    (request) =>
+    (prompt) =>
       new Promise((resolve) => {
-        passwordPending?.(null);
-        passwordPending = resolve;
+        pendingPassword?.(null);
+        pendingPassword = resolve;
         setModal({
           kind: "secret",
-          title: "SSH authentication",
-          description: `${request.username ? `${request.username}@` : ""}${request.destination}\n${request.prompt}`,
+          description: `${prompt.username ? `${prompt.username}@` : ""}${prompt.destination}\n${prompt.prompt}`,
           resolve,
         });
       }),
   );
-  const drafts = new Map<string, string>();
-  const unsubscribe = props.client?.subscribe((state) => {
-    const previous = draftKey(snapshot());
-    const next = draftKey(state);
-    if (previous !== next) {
-      drafts.set(previous, composer?.plainText ?? draft());
-      const text = drafts.get(next) ?? "";
-      composer?.setText(text);
-      setDraft(text);
-    }
-    setSnapshot(state);
-  });
   onCleanup(() => {
     unsubscribe?.();
-    output()?.stop?.();
-    passwordPending?.(null);
+    unsubscribePreferences?.();
+    pendingPassword?.(null);
+    pendingNavigation?.resolve(false);
+    for (const dispose of htmlPreviews) void dispose();
   });
-
-  const projection = () => snapshot()?.thread;
-  const selectedProject = createMemo(() => {
-    const state = snapshot();
-    const projectId =
-      state?.thread?.thread.projectId ??
-      state?.shell?.threads.find((thread) => thread.id === state.selectedThreadId)?.projectId;
-    return state?.shell?.projects.find((project) => project.id === projectId);
+  const shell = createMemo(() => state()?.shell);
+  const environment = createMemo(() => state()?.environmentId);
+  const allThreads = createMemo(() => [
+    ...new Map(
+      [...(shell()?.threads ?? []), ...(shell()?.archivedThreads ?? [])].map((entry) => [
+        entry.id,
+        entry,
+      ]),
+    ).values(),
+  ]);
+  const [snoozeRevision, setSnoozeRevision] = createSignal(0);
+  // Schedule a single wake at the next snooze deadline without repainting on a clock interval.
+  createEffect(() => {
+    snoozeRevision();
+    const now = DateTime.toEpochMillis(DateTime.nowUnsafe());
+    const deadlines = allThreads().flatMap((entry) =>
+      entry.snoozedUntil && DateTime.toEpochMillis(entry.snoozedUntil) > now
+        ? [DateTime.toEpochMillis(entry.snoozedUntil)]
+        : [],
+    );
+    if (!deadlines.length) return;
+    const timer = Effect.runFork(
+      Effect.sleep(Math.max(1, Math.min(...deadlines) - now)).pipe(
+        Effect.andThen(Effect.sync(() => setSnoozeRevision((value) => value + 1))),
+      ),
+    );
+    onCleanup(() => {
+      Effect.runFork(Fiber.interrupt(timer));
+    });
   });
-  const context = (): TuiActionContext => {
-    const state = snapshot();
-    const cwd =
-      state?.thread?.thread.worktreePath ?? selectedProject()?.workspaceRoot ?? state?.config?.cwd;
-    return {
-      ...(cwd ? { cwd } : {}),
-      ...(state?.selectedThreadId ? { threadId: state.selectedThreadId } : {}),
-      ...(selectedProject() ? { projectId: selectedProject()!.id } : {}),
-      ...(state?.thread ? { modelSelection: state.thread.thread.modelSelection } : {}),
-    };
-  };
-  const pending = createMemo(
-    () => projection()?.runtimeRequests.filter((request) => request.status === "pending") ?? [],
-  );
-
+  const project = createMemo(() => {
+    const current = state();
+    const id =
+      current?.thread?.thread.projectId ??
+      current?.shell?.threads.find((thread) => thread.id === current.selectedThreadId)?.projectId;
+    return current?.shell?.projects.find((entry) => entry.id === id);
+  });
+  const thread = () => state()?.thread?.thread;
+  const shellThread = () => allThreads().find((entry) => entry.id === state()?.selectedThreadId);
+  const cwd = () => thread()?.worktreePath ?? project()?.workspaceRoot;
+  const showSidebar = () => sidebar() && dimensions().width >= 86;
+  const showWorkspace = () => workspace() && area() === "chat" && dimensions().width >= 132;
+  const activeFocus = () =>
+    (focus() === "workspace" && !showWorkspace()) || (focus() === "sidebar" && !showSidebar())
+      ? "main"
+      : focus();
   function client() {
-    if (!props.client)
-      throw new Error(
-        "Demo data is offline. Restart with --pair URL or --connect URL to use a T3 environment.",
-      );
+    if (!props.client) throw new Error("Restart without --demo to connect to a T3 environment.");
     return props.client;
   }
-  async function run(operation: () => Promise<unknown>, success?: string) {
-    if (busy()) return;
+  function notify(text: string, error = false) {
+    setNotice({ text, error });
+  }
+  async function run(action: () => Promise<unknown>, success?: string) {
+    operationCount += 1;
     setBusy(true);
-    setFailure(false);
     try {
-      await operation();
-      if (success) setNotice(success);
-    } catch (error) {
-      setFailure(true);
-      setNotice(error instanceof Error ? error.message : String(error));
+      await action();
+      if (success) notify(success);
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : String(cause), true);
     } finally {
-      setBusy(false);
+      operationCount -= 1;
+      setBusy(operationCount > 0);
     }
   }
-  function pick(title: string, choices: readonly Choice[]) {
+  function choose(title: string, options: Choice[]) {
     setModal({
-      kind: "picker",
+      kind: "choose",
       title,
-      options: choices.map(({ run: value, ...choice }) => ({ ...choice, value })),
+      options: options.map(({ run: value, ...option }) => ({ ...option, value })),
     });
   }
-  function form(formProps: Omit<FormProps, "onCancel">) {
-    setModal({ kind: "form", props: { ...formProps, onCancel: () => setModal(null) } });
+  function form(options: FieldFormOptions) {
+    setModal({ kind: "form", options });
   }
-  function showOutput(title: string, value: unknown) {
-    output()?.stop?.();
-    setOutput({
-      title,
-      text: typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? "Done"),
+  function confirm(title: string, message: string, action: () => Promise<void>, label = "Confirm") {
+    choose(title, [
+      { title: label, description: message, run: () => void run(action) },
+      { title: "Cancel", run: () => {} },
+    ]);
+  }
+  function beforeNavigate(): Promise<boolean> {
+    const messages = [...navigationGuards.keys()]
+      .map((guard) => guard())
+      .filter((message) => message !== null);
+    if (!messages.length) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const finish = (approved: boolean) => {
+        pendingNavigation = undefined;
+        if (approved) for (const discard of navigationGuards.values()) discard?.();
+        resolve(approved);
+      };
+      const choice: Modal = {
+        kind: "choose",
+        title: "Discard unsaved edits?",
+        onCancel: () => finish(false),
+        options: [
+          { title: "Keep editing", description: messages.join("\n"), value: () => finish(false) },
+          { title: "Discard edits and continue", value: () => finish(true) },
+        ],
+      };
+      setModal(choice);
+      pendingNavigation = { modal: choice, resolve };
     });
   }
-  function closeOutput() {
-    output()?.stop?.();
-    setOutput(null);
+  function exit() {
+    void beforeNavigate().then((approved) => {
+      if (approved) props.onExit();
+    });
+  }
+  function openThread(id: string) {
+    if (id === state()?.selectedThreadId && area() === "chat") {
+      setFocus("main");
+      return;
+    }
+    const destination = state()?.environmentId;
+    void run(async () => {
+      if (!(await beforeNavigate()) || state()?.environmentId !== destination) return;
+      client().selectThread(id);
+      setArea("chat");
+      setFocus("main");
+      await request(client(), ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
+        type: "thread.visit",
+        commandId: commandId(),
+        threadId: ThreadId.make(id),
+        visitedAt: DateTime.formatIso(DateTime.nowUnsafe()),
+        opened: true,
+      });
+    });
+  }
+  function openArea(next: Area) {
+    if (next === area()) {
+      setFocus("main");
+      return;
+    }
+    void beforeNavigate().then((approved) => {
+      if (approved) {
+        setArea(next);
+        setFocus("main");
+      }
+    });
+  }
+  function toggleWorkspace() {
+    if (dimensions().width < 132) {
+      openArea("workspace");
+      return;
+    }
+    if (!workspace()) {
+      setWorkspace(true);
+      return;
+    }
+    void beforeNavigate().then((approved) => {
+      if (approved) setWorkspace(false);
+    });
+  }
+  function showChanges() {
+    if (dimensions().width >= 132 && area() !== "chat") {
+      void beforeNavigate().then((approved) => {
+        if (approved) {
+          setWorkspaceTab("changes");
+          setArea("chat");
+          setWorkspace(true);
+          setFocus("workspace");
+        }
+      });
+      return;
+    }
+    setWorkspaceTab("changes");
+    if (dimensions().width >= 132) {
+      setArea("chat");
+      setWorkspace(true);
+      setFocus("workspace");
+    } else openArea("workspace");
+  }
+  function openFile(path: string) {
+    if (dimensions().width >= 132 && area() !== "chat") {
+      void beforeNavigate().then((approved) => {
+        if (approved) {
+          setOpenPath(path);
+          setWorkspaceTab("files");
+          setArea("chat");
+          setWorkspace(true);
+          setFocus("workspace");
+        }
+      });
+      return;
+    }
+    setOpenPath(path);
+    setWorkspaceTab("files");
+    if (dimensions().width >= 132) {
+      setArea("chat");
+      setWorkspace(true);
+      setFocus("workspace");
+    } else openArea("workspace");
+  }
+  function commandId() {
+    return CommandId.make(SecureRandom.uuidV4Unsafe());
+  }
+  function scope() {
+    const destination = state()?.environmentId;
+    return () => {
+      if (state()?.environmentId !== destination)
+        throw new Error("The environment changed. Reopen this action in its destination.");
+    };
+  }
+  async function dispatch(command: OrchestrationV2Command) {
+    await request(client(), ORCHESTRATION_V2_WS_METHODS.dispatchCommand, command);
+  }
+  function pair() {
+    const check = scope();
+    form({
+      title: "Pair environment",
+      description: "Paste a fresh pairing URL from your T3 server.",
+      fields: [{ name: "url", label: "Pairing URL", type: "secret", required: true }],
+      submitLabel: "Connect",
+      onSubmit: async (values) => {
+        if (!(await beforeNavigate())) return;
+        check();
+        await client().connect(values.url!.trim());
+      },
+    });
   }
   function environments() {
     void run(async () => {
       const available = await client().environments();
-      pick(
-        "Environments",
-        available
-          .map<Choice>((environment) => ({
-            title: environment.label,
-            description: environment.environmentId,
-            run: () => {
-              void run(async () => {
-                closeOutput();
-                await client().selectEnvironment(environment.environmentId);
-              });
-            },
-          }))
-          .concat([
-            {
-              title: "Pair another environment…",
-              description: "Use a fresh pairing URL from the destination server.",
-              run: connect,
-            },
-          ]),
-      );
+      choose("Switch environment", [
+        ...available.map((entry) => ({
+          title: entry.label,
+          category: entry.environmentId === state()?.environmentId ? "Connected" : "",
+          run: () =>
+            void run(async () => {
+              if (await beforeNavigate()) await client().selectEnvironment(entry.environmentId);
+            }),
+        })),
+        { title: "Pair another environment…", run: pair },
+        { title: "Manage connections…", run: () => openArea("settings") },
+      ]);
     });
   }
-  function connect() {
-    form({
-      title: "Pair environment",
-      description:
-        "Paste a fresh pairing URL from your T3 server. It is exchanged and saved privately on this computer.",
-      initialValue: "",
-      onSubmit: async (pairingUrl) => {
-        await client().connect(pairingUrl.trim());
-        closeOutput();
-        setModal(null);
-      },
-    });
+  function feature() {
+    return { client: client(), state, ui, focused: true, onFocus: () => setFocus("main") };
   }
-  function ssh() {
-    form({
-      title: "Connect with SSH",
-      description:
-        "Use an SSH config alias or host. T3 can install and start its remote server on this host when needed.",
-      initialValue: JSON.stringify(
-        { alias: "", hostname: "", username: null, port: null },
-        null,
-        2,
-      ),
-      multiline: true,
-      onSubmit: async (text) => {
-        const target = decodeSshTarget(JSON.parse(text));
-        if (!target.alias.trim() && !target.hostname.trim())
-          throw new Error("Enter an SSH alias or hostname.");
-        try {
-          await client().addSsh(target);
-        } catch (error) {
-          setFailure(true);
-          setNotice(error instanceof Error ? error.message : String(error));
-          throw error;
-        }
-        setModal(null);
-        closeOutput();
-      },
-    });
+  function newProject() {
+    newProjectActions(feature());
   }
-  function login() {
-    void run(async () => {
-      await client().login((prompt) =>
-        showOutput(
-          "Sign in to T3 Connect",
-          `Open on any device:\n${prompt.verificationUriComplete ?? prompt.verificationUri}\n\nCode: ${prompt.userCode}\n\nWaiting for authorization. Ctrl+Q cancels and exits.`,
-        ),
-      );
-      closeOutput();
-      setNotice("Signed in. Choose Switch environment to see your hosts.");
-    });
-  }
-  function threads() {
-    const state = snapshot();
-    pick(
-      "Threads",
-      (state?.shell?.threads ?? []).map((thread) => ({
-        title: thread.title,
-        category:
-          state?.shell?.projects.find((project) => project.id === thread.projectId)?.title ??
-          "Thread",
-        description: `${thread.status} · ${thread.modelSelection.model}${thread.branch ? ` · ${thread.branch}` : ""}`,
-        run: () => {
-          closeOutput();
-          client().selectThread(thread.id);
-        },
+  function currentProjectActions() {
+    choose(
+      "Project actions",
+      (shell()?.projects ?? []).map((entry) => ({
+        title: entry.title,
+        description: entry.workspaceRoot,
+        run: () => projectActions(feature(), entry.id),
       })),
     );
   }
-  function newThread() {
-    pick(
-      "New thread in project",
-      (snapshot()?.shell?.projects ?? [])
-        .map((project) => ({
-          title: project.title,
-          description: project.workspaceRoot,
-          run: () => {
-            void run(async () => {
-              await client().createThread(project.id);
-              closeOutput();
-            });
-          },
-        }))
-        .concat([
-          {
-            title: "Add a project…",
-            description: "Use a workspace path on the connected environment.",
-            run: newProject,
-          },
-        ]),
-    );
-  }
-  function newProject() {
-    form({
-      title: "Add project",
-      description: "Workspace path on the connected T3 environment.",
-      initialValue: context().cwd ?? "",
-      onSubmit: async (path) => {
-        if (!path.trim()) throw new Error("Enter a workspace path.");
-        const id = await client().createProject(path.trim());
-        await client().createThread(id);
-        setModal(null);
-        closeOutput();
-      },
+  function newThread(projectId?: string) {
+    if (!projectId) {
+      choose("New thread", [
+        ...(state()?.shell?.projects ?? []).map((entry) => ({
+          title: entry.title,
+          description: entry.workspaceRoot,
+          run: () => newThread(entry.id),
+        })),
+        { title: "Add project…", run: newProject },
+      ]);
+      return;
+    }
+    void run(async () => {
+      if (!(await beforeNavigate())) return;
+      await client().createThread(projectId);
+      setArea("chat");
+      setFocus("main");
     });
   }
-  function models() {
-    pick(
+  function chooseModel() {
+    const check = scope();
+    const selected = state()?.selectedThreadId;
+    choose(
       "Choose model",
-      (snapshot()?.config?.providers ?? []).flatMap((provider) =>
+      (state()?.config?.providers ?? []).flatMap((provider) =>
         provider.enabled && provider.installed
           ? provider.models.map((model) => ({
               title: model.name,
               category: provider.displayName ?? provider.driver,
               description: model.slug,
-              run: () => {
-                void run(
-                  () => client().setModel({ instanceId: provider.instanceId, model: model.slug }),
-                  "Model updated",
-                );
-              },
+              run: () =>
+                void run(async () => {
+                  check();
+                  if (state()?.selectedThreadId !== selected)
+                    throw new Error("The thread changed. Choose the model again.");
+                  await client().setModel({ instanceId: provider.instanceId, model: model.slug });
+                }, "Model updated"),
             }))
           : [],
       ),
     );
   }
-  function openItem(entry: OrchestrationV2ProjectedTurnItem) {
-    void run(async () => {
-      const result = decodeItemDetail(
-        await client().invoke(ORCHESTRATION_V2_WS_METHODS.getTurnItem, {
-          threadId: entry.sourceThreadId,
-          itemId: entry.sourceItemId,
-        }),
-      );
-      if (!result.item) throw new Error("This item is no longer available.");
-      showOutput(
-        result.item.title ?? "Item details",
-        turnItemOutputText(result.item) ?? result.item,
-      );
-    });
-  }
-  function itemDetails() {
-    pick(
-      "Item details and full output",
-      (projection()?.visibleTurnItems ?? []).map((entry) => ({
-        title: entry.item.title ?? entry.item.type.replaceAll("_", " "),
-        description: entry.item.status,
-        run: () => openItem(entry),
-      })),
-    );
-  }
-  function serviceForm(
-    service: TuiService,
-    initial?: unknown,
-    title = service.method,
-    description?: string,
-  ) {
-    const seeded = initial ?? JSON.parse(service.defaultDraft);
-    const ctx = context();
-    if (seeded && typeof seeded === "object") {
-      if ("threadId" in seeded && !seeded.threadId) seeded.threadId = ctx.threadId ?? "";
-      if ("cwd" in seeded && !seeded.cwd) seeded.cwd = ctx.cwd ?? "";
-      if ("projectId" in seeded && !seeded.projectId) seeded.projectId = ctx.projectId ?? "";
-      if ("commandId" in seeded && !seeded.commandId)
-        seeded.commandId = SecureRandom.uuidV4Unsafe();
+  function threadActions(target = shellThread()) {
+    if (!target) {
+      notify("Select a thread first.");
+      return;
     }
-    form({
-      title,
-      description: `${description ?? service.method}\n${service.streaming ? "Stream results until you close the result view." : "Review values before applying. Changes execute on the connected environment."}\n${service.payloadSchema}`,
-      initialValue: JSON.stringify(seeded, null, 2),
-      multiline: true,
-      onSubmit: async (text) => {
-        const payload: unknown = JSON.parse(text);
-        if (service.streaming) {
-          output()?.stop?.();
-          setOutput({ title, text: "Waiting for results…" });
-          let received = false;
-          const stop = client().stream(
-            service.method,
-            payload,
-            (value) => {
-              const line = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-              setOutput((previous) => {
-                if (previous?.title !== title) return previous;
-                const combined = received ? `${previous.text}\n${line}` : line;
-                received = true;
-                return {
-                  ...previous,
-                  text:
-                    combined.length > 200_000
-                      ? `[Earlier output omitted]\n${combined.slice(-180_000)}`
-                      : combined,
-                };
+    const check = scope();
+    const id = target.id;
+    const action = (
+      type:
+        | "thread.archive"
+        | "thread.unarchive"
+        | "thread.pin"
+        | "thread.unpin"
+        | "thread.settle"
+        | "thread.mark-unread",
+    ) => {
+      void run(async () => {
+        check();
+        await dispatch({ type, commandId: commandId(), threadId: id });
+      });
+    };
+    choose(target.title, [
+      {
+        title: "Rename thread…",
+        run: () =>
+          form({
+            title: "Rename thread",
+            fields: [{ name: "title", label: "Title", value: target.title, required: true }],
+            onSubmit: async (values) => {
+              check();
+              await dispatch({
+                type: "thread.metadata.update",
+                commandId: commandId(),
+                threadId: id,
+                title: values.title!.trim(),
               });
             },
-            (error) => {
-              setFailure(true);
-              setNotice(error.message);
-            },
-          );
-          setOutput((previous) => (previous ? { ...previous, stop } : previous));
-        } else showOutput(title, await client().invoke(service.method, payload));
-        setModal(null);
+          }),
       },
-    });
-  }
-  function servicePicker() {
-    pick(
-      "All T3 services",
-      services.map((service) => ({
-        title: service.method,
-        category: serviceCategory(service.method),
-        description: service.streaming ? "Streaming service" : "Request and response",
+      {
+        title: target.pinnedAt ? "Unpin thread" : "Pin thread",
+        run: () => action(target.pinnedAt ? "thread.unpin" : "thread.pin"),
+      },
+      {
+        title: target.settledOverride === "settled" ? "Move to active" : "Settle thread",
         run: () => {
-          if (service.variants.length > 1)
-            pick(
-              service.method,
-              service.variants.map((variant) => ({
-                title: variant.name,
-                run: () => serviceForm(service, JSON.parse(variant.draft)),
-              })),
-            );
-          else serviceForm(service);
+          if (target.settledOverride !== "settled") action("thread.settle");
+          else
+            void run(async () => {
+              check();
+              await dispatch({
+                type: "thread.unsettle",
+                commandId: commandId(),
+                threadId: id,
+                reason: "user",
+              });
+            });
         },
+      },
+      {
+        title: target.snoozedUntil ? "Unsnooze thread" : "Snooze thread…",
+        run: () => {
+          if (target.snoozedUntil)
+            void run(async () => {
+              check();
+              await dispatch({
+                type: "thread.unsnooze",
+                commandId: commandId(),
+                threadId: id,
+                reason: "user",
+              });
+            });
+          else
+            form({
+              title: "Snooze thread",
+              description: "Use an ISO date and time including its timezone.",
+              fields: [
+                {
+                  name: "until",
+                  label: "Until",
+                  value: DateTime.formatIso(DateTime.add(DateTime.nowUnsafe(), { hours: 1 })),
+                  required: true,
+                },
+              ],
+              onSubmit: async (values) => {
+                check();
+                const until = DateTime.makeUnsafe(values.until!);
+                if (DateTime.toEpochMillis(until) <= DateTime.toEpochMillis(DateTime.nowUnsafe()))
+                  throw new Error("Choose a future time.");
+                await dispatch({
+                  type: "thread.snooze",
+                  commandId: commandId(),
+                  threadId: id,
+                  snoozedUntil: DateTime.formatIso(until),
+                });
+              },
+            });
+        },
+      },
+      { title: "Mark unread", run: () => action("thread.mark-unread") },
+      {
+        title: "Fork thread…",
+        run: () =>
+          form({
+            title: "Fork thread",
+            fields: [
+              { name: "title", label: "Title", value: `${target.title} (fork)`, required: true },
+            ],
+            onSubmit: async (values) => {
+              check();
+              const targetId = ThreadId.make(SecureRandom.uuidV4Unsafe());
+              await dispatch({
+                type: "thread.fork",
+                commandId: commandId(),
+                sourceThreadId: id,
+                targetThreadId: targetId,
+                sourcePoint: { type: "latest_stable" },
+                createdBy: "user",
+                creationSource: "web",
+                title: values.title!.trim(),
+              });
+              check();
+              openThread(targetId);
+            },
+          }),
+      },
+      {
+        title: "Regenerate title",
+        run: () =>
+          void run(async () => {
+            check();
+            await dispatch({
+              type: "thread.metadata.update",
+              commandId: commandId(),
+              threadId: id,
+              regenerateTitle: true,
+            });
+          }),
+      },
+      {
+        title: target.autoSettleDisabledAt
+          ? "Enable automatic settling"
+          : "Disable automatic settling",
+        run: () =>
+          void run(async () => {
+            check();
+            await dispatch({
+              type: "thread.auto-settle.set",
+              commandId: commandId(),
+              threadId: id,
+              enabled: !!target.autoSettleDisabledAt,
+            });
+          }),
+      },
+      {
+        title: "Restart agent session",
+        description:
+          "The next message starts a new provider session with the conversation retained.",
+        run: () => {
+          confirm(
+            "Restart agent session",
+            "Detach the provider sessions; your next message resumes from T3's conversation.",
+            async () => {
+              check();
+              await client().stopSession({ threadId: id });
+            },
+            "Restart session",
+          );
+        },
+      },
+      {
+        title: "Tags…",
+        run: () =>
+          form({
+            title: "Thread tags",
+            description: "One tag per line.",
+            fields: [
+              {
+                name: "tags",
+                label: "Tags",
+                type: "multiline",
+                value: (target.tags ?? []).join("\n"),
+              },
+            ],
+            onSubmit: async (values) => {
+              check();
+              const tags = [
+                ...new Set(
+                  (values.tags ?? "")
+                    .split("\n")
+                    .map((tag) => tag.trim())
+                    .filter(Boolean),
+                ),
+              ];
+              if (tags.some((tag) => tag.length > 64))
+                throw new Error("Tags can contain at most 64 characters.");
+              for (const tag of target.tags ?? [])
+                if (!tags.includes(tag)) {
+                  check();
+                  await dispatch({
+                    type: "thread.tag.set",
+                    commandId: commandId(),
+                    threadId: id,
+                    tag,
+                    tagged: false,
+                  });
+                }
+              for (const tag of tags)
+                if (!target.tags?.includes(tag)) {
+                  check();
+                  await dispatch({
+                    type: "thread.tag.set",
+                    commandId: commandId(),
+                    threadId: id,
+                    tag,
+                    tagged: true,
+                  });
+                }
+            },
+          }),
+      },
+      {
+        title: "Turn into project",
+        run: () =>
+          confirm(
+            "Turn thread into project",
+            "Create a project from this thread's workspace.",
+            async () => {
+              check();
+              await request(client(), WS_METHODS.projectsCreateFromThread, { threadId: id });
+            },
+            "Create project",
+          ),
+      },
+      { title: "Checkpoints…", run: checkpoints },
+      {
+        title: target.archivedAt ? "Reopen thread" : "Archive thread",
+        run: () => action(target.archivedAt ? "thread.unarchive" : "thread.archive"),
+      },
+      {
+        title: "Delete thread…",
+        run: () =>
+          confirm(
+            "Delete thread",
+            "Permanently delete this conversation and its history.",
+            async () => {
+              if (!(await beforeNavigate())) return;
+              check();
+              await dispatch({ type: "thread.delete", commandId: commandId(), threadId: id });
+              if (state()?.selectedThreadId === id) client().selectThread(null);
+            },
+            "Delete thread permanently",
+          ),
+      },
+    ]);
+  }
+  function checkpoints() {
+    const projection = state()?.thread;
+    const check = scope();
+    if (!projection) return;
+    choose(
+      "Checkpoints",
+      projection.checkpoints.map((checkpoint) => ({
+        title: `Checkpoint ${checkpoint.ordinalWithinScope + 1}`,
+        category: checkpoint.status,
+        description: `${checkpoint.files.length} files · ${DateTime.formatIso(checkpoint.capturedAt)}`,
+        run: () =>
+          choose("Checkpoint", [
+            ...(checkpoint.appRunOrdinal === null
+              ? []
+              : [
+                  {
+                    title: "Review checkpoint changes",
+                    run: () =>
+                      void run(async () => {
+                        check();
+                        const diff = await request(
+                          client(),
+                          ORCHESTRATION_V2_WS_METHODS.getTurnDiff,
+                          {
+                            threadId: projection.thread.id,
+                            fromTurnCount: checkpoint.appRunOrdinal! - 1,
+                            toTurnCount: checkpoint.appRunOrdinal!,
+                          },
+                        );
+                        check();
+                        ui.text(
+                          `Checkpoint ${checkpoint.ordinalWithinScope + 1}`,
+                          diff.diff || "No file changes in this checkpoint.",
+                          "diff",
+                        );
+                      }),
+                  },
+                ]),
+            {
+              title: "Restore conversation to here",
+              run: () =>
+                confirm(
+                  "Restore checkpoint",
+                  "The conversation returns to this checkpoint. Workspace files remain as they are.",
+                  async () => {
+                    check();
+                    await dispatch({
+                      type: "checkpoint.rollback",
+                      commandId: commandId(),
+                      threadId: projection.thread.id,
+                      checkpointId: checkpoint.id,
+                      scopeId: checkpoint.scopeId,
+                      restoreFiles: false,
+                    });
+                  },
+                  "Restore conversation",
+                ),
+            },
+            {
+              title: "Restore conversation and files",
+              run: () =>
+                confirm(
+                  "Restore checkpoint and files",
+                  "Tracked workspace files and conversation return to this checkpoint.",
+                  async () => {
+                    check();
+                    await dispatch({
+                      type: "checkpoint.rollback",
+                      commandId: commandId(),
+                      threadId: projection.thread.id,
+                      checkpointId: checkpoint.id,
+                      scopeId: checkpoint.scopeId,
+                      restoreFiles: true,
+                    });
+                  },
+                  "Restore files and conversation",
+                ),
+            },
+          ]),
       })),
     );
   }
-  function answerQuestions(
-    requestId: string,
-    questions: readonly OrchestrationV2UserInputQuestion[],
-  ) {
-    const answers: Record<string, unknown> = {};
-    function next(index: number) {
-      const question = questions[index];
-      if (!question) {
-        void run(() => client().answer(requestId, answers), "Answer sent");
-        return;
-      }
-      if (
-        question.multiSelect ||
-        question.options.length === 0 ||
-        question.initialAnswer !== undefined
-      ) {
-        form({
-          title: question.header,
-          description: `${question.question}\n${question.options.map((option) => `${option.value ?? option.label}: ${option.description}`).join("\n")}${question.multiSelect ? "\nEnter a JSON array of the option values, or a custom answer." : ""}`,
-          initialValue: question.initialAnswer ?? (question.multiSelect ? "[]" : ""),
-          onSubmit: async (text) => {
-            const selected: unknown =
-              question.multiSelect && text.trim().startsWith("[") ? JSON.parse(text) : undefined;
-            if (
-              selected !== undefined &&
-              (!Array.isArray(selected) || !selected.every((value) => typeof value === "string"))
-            )
-              throw new Error("Enter an array of option values.");
-            const answer = resolvePendingUserInputAnswer(
-              question,
-              Array.isArray(selected) ? { selectedOptionValues: selected } : { customAnswer: text },
-            );
-            if (answer === null)
-              throw new Error("Choose an offered option or enter an allowed answer.");
-            answers[question.id] = answer;
-            setModal(null);
-            next(index + 1);
-          },
-        });
-        return;
-      }
-      const options: Choice[] = question.options.map((option) => ({
-        title: option.label,
-        description: `${question.question}\n${option.description}`,
-        run: () => {
-          answers[question.id] = option.value ?? option.label;
-          next(index + 1);
-        },
-      }));
-      if (question.allowCustomAnswer !== false)
-        options.push({
-          title: "Write an answer…",
-          run: () => {
-            form({
-              title: question.header,
-              description: question.question,
-              initialValue: "",
-              onSubmit: async (text) => {
-                const answer = resolvePendingUserInputAnswer(question, { customAnswer: text });
-                if (answer === null) throw new Error("Enter an answer.");
-                answers[question.id] = answer;
-                setModal(null);
-                next(index + 1);
-              },
-            });
-          },
-        });
-      pick(question.header, options);
-    }
-    next(0);
-  }
-  function approvals() {
-    pick(
-      "Pending requests",
-      pending().map((request) => {
-        const item = projection()?.turnItems.find(
-          (entry) =>
-            (entry.type === "approval_request" || entry.type === "user_input_request") &&
-            entry.requestId === request.id,
-        );
-        return {
-          title: item?.title ?? request.kind.replaceAll("_", " "),
-          description:
-            item?.type === "approval_request"
-              ? (item.prompt ?? item.reason ?? "Review request")
-              : "Respond to the agent",
-          run: () => {
-            if (item?.type === "user_input_request") {
-              answerQuestions(request.id, item.questions);
-              return;
-            }
-            const decisions: readonly { title: string; decision: ProviderApprovalDecision }[] = [
-              { title: "Allow once", decision: "accept" },
-              { title: "Allow for session", decision: "acceptForSession" },
-              { title: "Decline", decision: "decline" },
-              { title: "Cancel", decision: "cancel" },
-            ];
-            pick(
-              item?.type === "approval_request"
-                ? (item.prompt ?? "Review approval")
-                : "Review approval",
-              decisions.map(({ title, decision }) => ({
-                title,
-                run: () => {
-                  void run(() => client().approve(request.id, decision), "Response sent");
-                },
-              })),
-            );
-          },
-        };
+  function terminal(terminalId?: string) {
+    void run(() =>
+      openTerminal({
+        client: client(),
+        renderer,
+        cwd: cwd() ?? "",
+        ...(terminalId ? { terminalId } : {}),
       }),
     );
   }
-  function commandPalette() {
-    const choices: Choice[] = [
-      { title: "Switch thread", category: "Threads", run: threads },
-      { title: "New thread", category: "Threads", run: newThread },
+  const ui: UiController = {
+    modal: () => modal() !== null,
+    beforeNavigate,
+    registerNavigationGuard: (guard, discard) => {
+      navigationGuards.set(guard, discard);
+      return () => navigationGuards.delete(guard);
+    },
+    notify,
+    run,
+    choose,
+    form,
+    confirm,
+    text: (title, content, language) => setModal({ kind: "text", title, content, language }),
+    openTerminal: terminal,
+    openBrowser: (url) => {
+      void run(() => openBrowser(url));
+    },
+    openHtml: (html, title = "HTML preview") => {
+      void run(async () => {
+        const preview = await createHtmlPreview(html);
+        htmlPreviews.add(preview.dispose);
+        try {
+          await openBrowser(preview.url);
+          notify(`${title} opened in your browser`);
+        } catch (error) {
+          ui.text(
+            title,
+            `${error instanceof Error ? error.message : String(error)}\n\n${preview.url}`,
+          );
+        }
+      });
+    },
+    previewImage: (resource, label) =>
+      setModal({ kind: "image", resource, label, environmentId: state()?.environmentId ?? null }),
+    openThread,
+    openArea,
+    openFile,
+    showChanges,
+    chooseModel,
+    threadActions: () => threadActions(),
+  };
+  function switchThread() {
+    choose(
+      "Switch thread",
+      allThreads().map((entry) => ({
+        title: entry.title,
+        description: entry.latestVisibleMessage?.text,
+        category: state()?.shell?.projects.find((candidate) => candidate.id === entry.projectId)
+          ?.title,
+        run: () => openThread(entry.id),
+      })),
+    );
+  }
+  function palette() {
+    choose("Commands", [
+      { title: "New thread", category: "Threads", run: () => newThread() },
+      { title: "Switch thread", category: "Threads", run: switchThread },
+      { title: "Thread actions", category: "Threads", run: () => threadActions() },
       { title: "Add project", category: "Projects", run: newProject },
-      { title: "Choose model", category: "Agent", run: models },
-      { title: "Switch environment", category: "Connections", run: environments },
-      { title: "Pair environment", category: "Connections", run: connect },
-      { title: "Connect with SSH", category: "Connections", run: ssh },
-      { title: "Sign in to T3 Connect", category: "Connections", run: login },
+      { title: "Project actions and settings", category: "Projects", run: currentProjectActions },
       {
-        title: "Sign out of T3 Connect",
-        category: "Connections",
-        run: () => {
-          void run(() => client().logout(), "Signed out");
-        },
+        title: "Search conversations",
+        category: "Threads",
+        run: () => conversationSearch(feature()),
       },
-      {
-        title: "Reconnect",
-        category: "Connections",
-        run: () => {
-          void run(() => client().reconnect());
-        },
-      },
-      { title: "Respond to pending requests", category: "Agent", run: approvals },
+      { title: "Choose model", category: "Agent", run: chooseModel },
       {
         title: "Interrupt turn",
         category: "Agent",
-        run: () => {
-          void run(() => client().interrupt(), "Stop requested");
-        },
+        run: () => void run(() => client().interrupt(), "Stop requested"),
       },
       {
-        title: "Load earlier history",
+        title: "Earlier conversation history",
         category: "Threads",
+        run: () => void run(() => client().loadEarlier()),
+      },
+      { title: "Checkpoints", category: "Threads", run: checkpoints },
+      { title: "Review changes", category: "Workspace", run: showChanges },
+      {
+        title: "Browse files",
+        category: "Workspace",
         run: () => {
-          void run(() => client().loadEarlier());
+          setWorkspaceTab("files");
+          openArea("workspace");
         },
       },
       {
-        title: "Thread details",
-        category: "Threads",
-        run: () => showOutput("Thread details", projection()),
-      },
-      { title: "Item details and full output", category: "Threads", run: itemDetails },
-      {
-        title: "Open terminal",
-        category: "Terminal",
-        description:
-          "Attach an interactive shell on the connected environment. Ctrl+] returns to chat.",
+        title: "Source control",
+        category: "Workspace",
         run: () => {
-          void run(() => openTerminal({ client: client(), renderer, cwd: context().cwd ?? "" }));
+          setWorkspaceTab("git");
+          openArea("workspace");
         },
       },
+      { title: "Open terminal", category: "Workspace", run: terminal },
+      ...destinations
+        .filter((item) => item.area !== "chat")
+        .map((item) => ({
+          title: item.title,
+          category: "Navigate",
+          run: () => openArea(item.area),
+        })),
+      { title: "Switch environment", category: "Connections", run: environments },
+      { title: "Pair environment", category: "Connections", run: pair },
       {
-        title: "Environment settings",
-        category: "Settings",
-        run: () => showOutput("Environment settings", snapshot()?.config),
+        title: "Reconnect",
+        category: "Connections",
+        run: () => void run(() => client().reconnect()),
       },
+      { title: "Toggle sidebar", category: "Layout", run: () => setSidebar((value) => !value) },
+      { title: "Toggle workspace panel", category: "Layout", run: toggleWorkspace },
       {
-        title: "All T3 services",
-        category: "Tools",
-        description: "Search and run the complete typed server interface.",
-        run: servicePicker,
+        title: "Terminal capabilities",
+        category: "Help",
+        run: () => ui.text("Terminal capabilities", terminalCapabilitiesReport(capabilities())),
       },
-      { title: "Keyboard help", category: "Help", run: help },
-      { title: "Exit", category: "App", run: props.onExit },
-      ...quickActions.map((action) => ({
-        title: action.title,
-        category: action.category,
-        description: action.description,
-        run: () => {
-          const service = services.find((candidate) => candidate.method === action.method);
-          if (service)
-            serviceForm(service, action.payload(context()), action.title, action.description);
-        },
-      })),
-    ];
-    pick("Commands", choices);
+      { title: "Service inspector", category: "Developer", run: () => openArea("advanced") },
+      { title: "Keyboard shortcuts", category: "Help", run: shortcuts },
+      { title: "Quit", category: "App", run: exit },
+    ]);
   }
-  function help() {
-    showOutput(
-      "Keyboard help",
-      "Ctrl+P   Commands and features\nCtrl+T   Switch thread\nCtrl+N   New thread\nCtrl+O   Choose model\nCtrl+A   Pending approvals and questions\nCtrl+K   Interrupt current turn\nCtrl+Q   Exit\nEnter    Send prompt\nShift+Enter   New line\nPageUp / PageDown   Scroll transcript\nEscape   Close result or dialog\n\nType /commands, /threads, /new, /models, /requests, /services or /help. Other provider slash commands are sent unchanged.\n\nService forms use JSON validated against the connected T3 contract. Ctrl+S or F2 executes the reviewed input. Streaming results stop when you close their view.",
+  function shortcuts() {
+    ui.text(
+      "Keyboard shortcuts",
+      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.",
     );
   }
-  async function send() {
-    const text = composer?.plainText ?? "";
-    const destination = draftKey(snapshot());
-    if (!text.trim() || busy() || modal()) return;
-    const routes: Record<string, () => void> = {
-      "/commands": commandPalette,
-      "/threads": threads,
-      "/new": newThread,
-      "/models": models,
-      "/requests": approvals,
-      "/services": servicePicker,
-      "/environments": environments,
-      "/connect": connect,
-      "/help": help,
-    };
-    const route = routes[text.trim()];
-    if (route) {
-      composer?.clear();
-      setDraft("");
-      route();
-      return;
-    }
-    await run(async () => {
-      await client().send(text);
-      if (drafts.get(destination) === text) drafts.delete(destination);
-      if (draftKey(snapshot()) === destination && composer?.plainText === text) {
-        composer.clear();
-        setDraft("");
-      }
-    });
+  function matches(entry: OrchestrationV2ThreadShell) {
+    if (
+      search() &&
+      !`${entry.title} ${entry.latestVisibleMessage?.text ?? ""}`
+        .toLowerCase()
+        .includes(search().toLowerCase())
+    )
+      return false;
+    if (filter() === "archived") return entry.archivedAt !== null;
+    if (entry.archivedAt) return false;
+    if (filter() === "all") return true;
+    snoozeRevision();
+    const currentEnvironment = environment();
+    const snoozed =
+      currentEnvironment !== null &&
+      currentEnvironment !== undefined &&
+      effectiveSnoozed(presentThreadShell(currentEnvironment, entry), {
+        now: DateTime.formatIso(DateTime.nowUnsafe()),
+      });
+    if (filter() === "snoozed") return snoozed;
+    if (snoozed) return false;
+    if (filter() === "settled") return entry.settledOverride === "settled";
+    return entry.settledOverride !== "settled";
+  }
+  const groups = createMemo(() =>
+    (shell()?.projects ?? []).map((entry) => {
+      const presented = allThreads()
+        .filter((candidate) => candidate.projectId === entry.id && matches(candidate))
+        .map((source) => ({
+          source,
+          id: source.id,
+          createdAt: DateTime.formatIso(source.createdAt),
+          pinOrderKey: source.pinOrderKey,
+          activeOrderKey: source.activeOrderKey,
+          unsettledAt: source.unsettledAt ? DateTime.formatIso(source.unsettledAt) : null,
+        }));
+      return {
+        project: entry,
+        threads: [
+          ...sortPinnedThreadsByOrderKey(presented.filter((value) => value.source.pinnedAt)),
+          ...sortActiveThreadsByOrderKey(presented.filter((value) => !value.source.pinnedAt)),
+        ].map((value) => value.source),
+      };
+    }),
+  );
+  const rows = createMemo(() =>
+    groups().flatMap((group) => (collapsed().has(group.project.id) ? [] : group.threads)),
+  );
+  function moveRow(delta: number) {
+    setSelectedRow((index) => Math.max(0, Math.min(rows().length - 1, index + delta)));
+    sidebarScroll?.scrollChildIntoView(`thread-${rows()[selectedRow()]?.id}`);
   }
   useKeyboard((event) => {
-    if (event.ctrl && event.name === "q") {
-      props.onExit();
-      event.preventDefault();
-      return;
-    }
-    if (modal()) return;
-    const shortcuts: Record<string, () => void> = {
-      p: commandPalette,
-      t: threads,
-      n: newThread,
-      o: models,
-      a: approvals,
-      k: () => {
-        void run(() => client().interrupt(), "Stop requested");
-      },
-    };
-    if (event.ctrl && shortcuts[event.name]) {
-      event.preventDefault();
-      shortcuts[event.name]?.();
-    } else if (event.name === "pageup" || event.name === "pagedown") {
-      history?.scrollBy(event.name === "pageup" ? -0.8 : 0.8, "viewport");
-      event.preventDefault();
-    } else if (event.name === "escape" && output()) {
-      closeOutput();
-      event.preventDefault();
-    }
+    if (event.ctrl && event.name === "q") exit();
+    else if (modal()) {
+      if (modal()?.kind === "image" && event.name === "escape") setModal(null);
+      else if (modal()?.kind === "text") {
+        if (event.name === "escape") setModal(null);
+        else if (event.name === "pageup") outputScroll?.scrollBy(-1, "viewport");
+        else if (event.name === "pagedown") outputScroll?.scrollBy(1, "viewport");
+        else return;
+      } else return;
+    } else if (event.ctrl && event.name === "p") palette();
+    else if (event.ctrl && event.name === "k") switchThread();
+    else if (event.ctrl && event.name === "n") newThread(project()?.id);
+    else if (event.ctrl && event.name === "b") setSidebar((value) => !value);
+    else if (event.ctrl && event.name === "e") toggleWorkspace();
+    else if (event.ctrl && event.name === "t") terminal();
+    else if (event.meta && destinations.some((entry) => entry.shortcut === event.name))
+      openArea(destinations.find((entry) => entry.shortcut === event.name)!.area);
+    else if (event.name === "f1") shortcuts();
+    else if (event.name === "f6")
+      setFocus((value) =>
+        value === "main"
+          ? showWorkspace()
+            ? "workspace"
+            : showSidebar()
+              ? "sidebar"
+              : "main"
+          : value === "workspace" && showSidebar()
+            ? "sidebar"
+            : "main",
+      );
+    else if (activeFocus() === "sidebar" && event.name === "up") moveRow(-1);
+    else if (activeFocus() === "sidebar" && event.name === "down") moveRow(1);
+    else if (activeFocus() === "sidebar" && event.name === "return" && rows()[selectedRow()])
+      openThread(rows()[selectedRow()]!.id);
+    else if (activeFocus() === "sidebar" && event.name === "f2")
+      threadActions(rows()[selectedRow()]);
+    else return;
+    event.preventDefault();
+    event.stopPropagation();
   });
-
-  const modalView = (): JSX.Element => {
-    const value = modal();
-    if (value?.kind === "picker")
-      return (
-        <DialogSelect
-          title={value.title}
-          options={value.options}
-          onCancel={() => setModal(null)}
-          onSelect={(option) => {
-            setModal(null);
-            try {
-              option.value();
-            } catch (error) {
-              setFailure(true);
-              setNotice(error instanceof Error ? error.message : String(error));
-            }
-          }}
-        />
-      );
-    if (value?.kind === "form") return <Form {...value.props} />;
-    if (value?.kind === "secret")
-      return (
-        <SecretForm
-          title={value.title}
-          description={value.description}
-          onSubmit={(secret) => {
-            passwordPending = undefined;
-            setModal(null);
-            value.resolve(secret);
-          }}
-        />
-      );
-    return null;
-  };
+  function filterPicker() {
+    choose(
+      "Show threads",
+      (["active", "all", "settled", "snoozed", "archived"] as const).map((value) => ({
+        title: value[0]!.toUpperCase() + value.slice(1),
+        run: () => {
+          setFilter(value);
+          setSelectedRow(0);
+        },
+      })),
+    );
+  }
   return (
-    <box width="100%" height="100%" backgroundColor={theme.background} flexDirection="column">
-      <box
-        height={2}
-        paddingX={2}
-        alignItems="center"
-        flexDirection="row"
-        backgroundColor={theme.backgroundPanel}
-      >
-        <text fg={theme.primary} flexShrink={0}>
-          T3 Code
-        </text>
-        <text
-          fg={theme.textMuted}
-          flexGrow={1}
-          truncate
-        >{`  ${snapshot()?.label ?? "Terminal client"}`}</text>
-        <text fg={snapshot()?.connection === "connected" ? theme.success : theme.textMuted}>
-          {props.demo ? "Offline demo" : (snapshot()?.connection ?? "Not connected")}
-        </text>
-      </box>
+    <box width={dimensions().width} height={dimensions().height} backgroundColor={theme.background}>
       <box flexDirection="row" flexGrow={1} minHeight={0}>
-        <Show when={dimensions().width >= 100}>
-          <box width={29} padding={1} backgroundColor={theme.backgroundPanel}>
-            <text fg={theme.text}>Projects</text>
-            <scrollbox flexGrow={1} marginTop={1}>
-              <For each={snapshot()?.shell?.projects ?? []}>
-                {(project) => (
-                  <box marginBottom={1}>
-                    <text
-                      fg={theme.textMuted}
-                      truncate
-                      onMouseDown={() => {
-                        void run(() => client().createThread(project.id));
-                      }}
-                    >
-                      {project.title}
-                    </text>
-                    <For
-                      each={
-                        snapshot()?.shell?.threads.filter(
-                          (thread) => thread.projectId === project.id,
-                        ) ?? []
-                      }
-                    >
-                      {(thread) => (
-                        <text
-                          fg={
-                            snapshot()?.selectedThreadId === thread.id ? theme.primary : theme.text
+        <Show when={showSidebar()}>
+          <box
+            width={29}
+            flexShrink={0}
+            backgroundColor={theme.sidebar}
+            paddingX={1}
+            onMouseDown={() => setFocus("sidebar")}
+          >
+            <box height={3} flexShrink={0} justifyContent="center">
+              <text fg={theme.text} onMouseDown={environments}>
+                T3 Code ▾
+              </text>
+            </box>
+            <text
+              height={1}
+              flexShrink={0}
+              fg={theme.textMuted}
+              truncate
+              onMouseDown={environments}
+            >
+              {state()?.label ?? (props.demo ? "Demo" : "Connect environment")}
+            </text>
+            <box height={1} flexShrink={0} marginTop={1} marginBottom={1}>
+              <text fg={theme.primary} onMouseDown={() => newThread(project()?.id)}>
+                ＋ New thread ^N
+              </text>
+            </box>
+            <For each={destinations}>
+              {(item) => (
+                <box
+                  height={1}
+                  flexShrink={0}
+                  backgroundColor={area() === item.area ? theme.sidebarSelected : theme.sidebar}
+                  onMouseDown={(event) => {
+                    event.stopPropagation();
+                    openArea(item.area);
+                  }}
+                >
+                  <text fg={area() === item.area ? theme.text : theme.textMuted}>
+                    {area() === item.area ? "› " : "  "}
+                    {item.title}
+                  </text>
+                </box>
+              )}
+            </For>
+            <box
+              height={1}
+              flexShrink={0}
+              marginTop={1}
+              flexDirection="row"
+              justifyContent="space-between"
+            >
+              <text fg={theme.textMuted} onMouseDown={filterPicker}>
+                {filter()} ▾
+              </text>
+              <text fg={theme.textMuted} onMouseDown={newProject}>
+                ＋ project
+              </text>
+            </box>
+            <input
+              placeholder="Search threads…"
+              value={search()}
+              focused={activeFocus() === "sidebar" && !modal()}
+              onInput={(value) => {
+                setSearch(value);
+                setSelectedRow(0);
+              }}
+              backgroundColor={theme.sidebar}
+              textColor={theme.text}
+              focusedTextColor={theme.text}
+              cursorColor={theme.primary}
+            />
+            <scrollbox
+              ref={(element) => {
+                sidebarScroll = element;
+              }}
+              flexGrow={1}
+              minHeight={0}
+            >
+              <For each={groups()}>
+                {(group) => (
+                  <box marginTop={1}>
+                    <box flexDirection="row">
+                      <text
+                        height={1}
+                        fg={theme.textMuted}
+                        flexGrow={1}
+                        truncate
+                        onMouseDown={(event) => {
+                          if (event.button === 2) {
+                            projectActions(feature(), group.project.id);
+                            return;
                           }
-                          truncate
-                          onMouseDown={() => {
-                            closeOutput();
-                            client().selectThread(thread.id);
-                          }}
-                        >{`${snapshot()?.selectedThreadId === thread.id ? "┃" : " "} ${thread.title}`}</text>
-                      )}
-                    </For>
+                          setCollapsed((current) => {
+                            const next = new Set(current);
+                            if (next.has(group.project.id)) next.delete(group.project.id);
+                            else next.add(group.project.id);
+                            return next;
+                          });
+                        }}
+                      >
+                        {collapsed().has(group.project.id) ? "▸ " : "▾ "}
+                        {group.project.title}
+                      </text>
+                      <text fg={theme.textMuted} onMouseDown={() => newThread(group.project.id)}>
+                        ＋
+                      </text>
+                    </box>
+                    <Show when={!collapsed().has(group.project.id)}>
+                      <For each={group.threads}>
+                        {(entry) => {
+                          const selected = () => state()?.selectedThreadId === entry.id;
+                          const cursor = () =>
+                            activeFocus() === "sidebar" && rows()[selectedRow()]?.id === entry.id;
+                          return (
+                            <box
+                              id={`thread-${entry.id}`}
+                              backgroundColor={
+                                selected() || cursor() ? theme.sidebarSelected : theme.sidebar
+                              }
+                              onMouseDown={(event) => {
+                                if (event.button === 2) threadActions(entry);
+                                else openThread(entry.id);
+                              }}
+                            >
+                              <text
+                                height={1}
+                                truncate
+                                fg={
+                                  entry.pendingRuntimeRequest
+                                    ? theme.warning
+                                    : selected()
+                                      ? theme.text
+                                      : theme.textMuted
+                                }
+                              >
+                                {entry.pinnedAt
+                                  ? "◆ "
+                                  : entry.pendingRuntimeRequest
+                                    ? "! "
+                                    : entry.activeRunId
+                                      ? "● "
+                                      : entry.lastError
+                                        ? "× "
+                                        : "  "}
+                                {entry.title}
+                              </text>
+                            </box>
+                          );
+                        }}
+                      </For>
+                    </Show>
                   </box>
                 )}
               </For>
-              <Show when={props.demo}>
-                <text fg={theme.textMuted}>
-                  Your projects and threads appear here after connecting.
+              <Show when={rows().length === 0}>
+                <text fg={theme.textMuted} wrapMode="word" marginTop={1}>
+                  No {filter()} threads. Start a thread or choose another filter.
                 </text>
               </Show>
             </scrollbox>
-            <text fg={theme.textMuted}>ctrl+t switch · ctrl+n new</text>
+            <text
+              height={1}
+              flexShrink={0}
+              fg={activeFocus() === "sidebar" ? theme.primary : theme.textMuted}
+              marginTop={1}
+              onMouseDown={palette}
+            >
+              ⌘ Commands ^P
+            </text>
           </box>
         </Show>
-        <box flexGrow={1} minWidth={0} paddingX={2}>
-          <box height={2} flexDirection="row" alignItems="center">
-            <text fg={theme.text} flexGrow={1} truncate>
-              {output()?.title ?? projection()?.thread.title ?? "Your agents, in your terminal"}
-            </text>
-            <Show when={output()}>
-              <text fg={theme.textMuted}>esc close</text>
-            </Show>
-          </box>
-          <scrollbox
-            ref={(element) => {
-              history = element;
-            }}
-            flexGrow={1}
-            minHeight={0}
-            stickyScroll={!output()}
-            stickyStart="bottom"
-            scrollY
-          >
-            <Show
-              when={output()}
-              fallback={
-                <Show
-                  when={projection()}
-                  fallback={
-                    <box marginTop={2} gap={1}>
-                      <text fg={theme.primary}>T3 Code + OpenCode’s terminal interface</text>
-                      <text fg={theme.text} wrapMode="word">
-                        Work with every T3 provider from one terminal. Threads, permissions, tools
-                        and checkpoints stay on your T3 environment.
-                      </text>
-                      <text fg={theme.textMuted} wrapMode="word">
-                        Ctrl+T opens a thread. Ctrl+N starts one. Ctrl+P opens commands for files,
-                        source control, scheduled tasks and settings.
-                      </text>
-                      <Show when={!props.demo && snapshot()?.environmentId === null}>
-                        <text fg={theme.primary} onMouseDown={connect}>
-                          Pair a T3 environment
-                        </text>
-                        <text fg={theme.primary} onMouseDown={ssh}>
-                          Connect with SSH
-                        </text>
-                        <text fg={theme.primary} onMouseDown={login}>
-                          Sign in to T3 Connect
-                        </text>
-                      </Show>
-                      <Show when={props.demo}>
-                        <box
-                          marginTop={2}
-                          border={["left"]}
-                          borderColor={theme.primary}
-                          paddingLeft={1}
-                        >
-                          <text fg={theme.primary}>You</text>
-                          <text fg={theme.text}>Review my changes and show the diff.</text>
-                        </box>
-                        <box
-                          marginTop={1}
-                          border={["left"]}
-                          borderColor={theme.borderSubtle}
-                          paddingLeft={1}
-                        >
-                          <text fg={theme.textMuted}>Agent · example</text>
-                          <text fg={theme.text}>
-                            Connected sessions stream messages, tool output and approval requests
-                            here.
-                          </text>
-                        </box>
-                      </Show>
-                    </box>
-                  }
-                >
-                  {(thread) => <Transcript projection={thread()} onOpenItem={openItem} />}
-                </Show>
-              }
-            >
-              {(result) => (
-                <text fg={theme.text} wrapMode="word">
-                  {result().text}
-                </text>
-              )}
-            </Show>
-          </scrollbox>
-          <Show when={pending().length > 0}>
-            <text
-              fg={theme.warning}
-              onMouseDown={approvals}
-            >{`${pending().length} request${pending().length === 1 ? "" : "s"} need your response · ctrl+a`}</text>
-          </Show>
-          <Show when={notice() ?? snapshot()?.error}>
-            <text
-              maxHeight={3}
-              fg={failure() || snapshot()?.error ? theme.error : theme.textMuted}
-              wrapMode="word"
-            >
-              {notice() ?? snapshot()?.error}
-            </text>
-          </Show>
+        <box flexGrow={1} minWidth={0}>
           <box
-            marginTop={1}
-            backgroundColor={theme.backgroundPanel}
-            paddingX={1}
-            paddingY={1}
-            flexShrink={0}
+            height={3}
+            paddingX={2}
+            flexDirection="row"
+            alignItems="center"
+            border={["bottom"]}
+            borderColor={theme.border}
           >
-            <textarea
-              ref={(element) => {
-                composer = element;
-              }}
-              focused={!modal() && !output()}
-              minHeight={1}
-              maxHeight={6}
-              placeholder={busy() ? "Working…" : "Ask your agent…"}
-              placeholderColor={theme.textMuted}
-              textColor={theme.text}
-              focusedTextColor={theme.text}
-              backgroundColor={theme.backgroundPanel}
-              focusedBackgroundColor={theme.backgroundPanel}
-              cursorColor={theme.primary}
-              onContentChange={() => setDraft(composer?.plainText ?? "")}
-              keyBindings={[
-                { name: "return", action: "submit" },
-                { name: "return", shift: true, action: "newline" },
-              ]}
-              onSubmit={() => {
-                void send();
-              }}
-            />
-            <box flexDirection="row" marginTop={1} height={1} flexShrink={0}>
-              <text fg={theme.primary} flexGrow={1} truncate>
-                {projection()?.thread.modelSelection.model ?? "Choose a thread to start"}
+            <Show when={!showSidebar()}>
+              <text fg={theme.primary} marginRight={2} onMouseDown={palette}>
+                T3
               </text>
-              <text fg={theme.textMuted}>
-                {draft().length > 0 ? "enter send · shift+enter newline" : "ctrl+o models"}
+            </Show>
+            <text fg={theme.textMuted} flexShrink={0} onMouseDown={() => newThread()}>
+              {project()?.title ?? "T3 Code"}
+              {" / "}
+            </text>
+            <text fg={theme.text} flexGrow={1} truncate>
+              {area() === "chat"
+                ? (thread()?.title ?? "New thread")
+                : destinations.find((entry) => entry.area === area())?.title}
+            </text>
+            <Show when={thread()?.branch}>
+              <text
+                fg={theme.textMuted}
+                marginLeft={1}
+                truncate
+                onMouseDown={() => {
+                  setWorkspaceTab("git");
+                  openArea("workspace");
+                }}
+              >
+                ⎇ {thread()?.branch}
               </text>
-            </box>
+            </Show>
+            <text fg={theme.textMuted} marginLeft={2} onMouseDown={showChanges}>
+              Changes
+            </text>
+            <text fg={theme.textMuted} marginLeft={2} onMouseDown={() => threadActions()}>
+              •••
+            </text>
           </box>
-          <text height={1} flexShrink={0} fg={theme.textMuted}>
-            ctrl+p commands · ctrl+t threads · ctrl+k stop · ctrl+q exit
-          </text>
+          <Show
+            when={props.client}
+            fallback={
+              <box flexGrow={1} padding={3} justifyContent="center">
+                <text fg={theme.text}>T3 Code in your terminal</text>
+                <text marginTop={1} fg={theme.textMuted} wrapMode="word">
+                  Projects, threads, conversation and source control share your T3 environment.
+                </text>
+                <text marginTop={1} fg={theme.textMuted}>
+                  Run without --demo to connect. Ctrl+P opens commands.
+                </text>
+              </box>
+            }
+          >
+            {(connectedClient) => (
+              <box flexDirection="row" flexGrow={1} minHeight={0}>
+                <box flexGrow={1} minWidth={0} onMouseDown={() => setFocus("main")}>
+                  <Show
+                    when={state()?.environmentId || area() === "settings"}
+                    fallback={
+                      <box flexGrow={1} padding={3} justifyContent="center">
+                        <text fg={theme.text}>Connect a T3 environment</text>
+                        <text fg={theme.textMuted} marginTop={1} wrapMode="word">
+                          Use the same projects and agents from this terminal.
+                        </text>
+                        <text fg={theme.primary} marginTop={2} onMouseDown={pair}>
+                          Pair environment
+                        </text>
+                        <text
+                          fg={theme.textMuted}
+                          marginTop={1}
+                          onMouseDown={() => openArea("settings")}
+                        >
+                          Connections and SSH in Settings
+                        </text>
+                      </box>
+                    }
+                  >
+                    <Show when={area() === "chat"}>
+                      <ConversationPanel
+                        client={connectedClient()}
+                        state={state}
+                        ui={ui}
+                        focused={activeFocus() === "main"}
+                        onFocus={() => setFocus("main")}
+                      />
+                    </Show>
+                    <Show when={area() === "workspace"}>
+                      <WorkspacePanel
+                        client={connectedClient()}
+                        state={state}
+                        ui={ui}
+                        focused={activeFocus() === "main"}
+                        onFocus={() => setFocus("main")}
+                        initialTab={workspaceTab()}
+                        openPath={openPath()}
+                      />
+                    </Show>
+                    <Show when={area() === "schedules"}>
+                      <SchedulesPanel
+                        client={connectedClient()}
+                        state={state}
+                        ui={ui}
+                        focused={activeFocus() === "main"}
+                        onFocus={() => setFocus("main")}
+                      />
+                    </Show>
+                    <Show when={area() === "settings"}>
+                      <SettingsPanel
+                        client={connectedClient()}
+                        state={state}
+                        ui={ui}
+                        focused={activeFocus() === "main"}
+                        onFocus={() => setFocus("main")}
+                      />
+                    </Show>
+                    <Show when={area() === "pull-requests"}>
+                      <PullRequestsPanel
+                        client={connectedClient()}
+                        state={state}
+                        ui={ui}
+                        focused={activeFocus() === "main"}
+                        onFocus={() => setFocus("main")}
+                      />
+                    </Show>
+                    <Show when={area() === "browser"}>
+                      <BrowserPanel
+                        client={connectedClient()}
+                        state={state}
+                        ui={ui}
+                        focused={activeFocus() === "main"}
+                        onFocus={() => setFocus("main")}
+                      />
+                    </Show>
+                    <Show when={area() === "advanced"}>
+                      <AdvancedPanel
+                        client={connectedClient()}
+                        state={state}
+                        ui={ui}
+                        focused={activeFocus() === "main"}
+                        onFocus={() => setFocus("main")}
+                      />
+                    </Show>
+                    <Show when={area() === "issues"}>
+                      <IssuesPanel
+                        client={connectedClient()}
+                        state={state}
+                        ui={ui}
+                        focused={activeFocus() === "main"}
+                        onFocus={() => setFocus("main")}
+                      />
+                    </Show>
+                  </Show>
+                </box>
+                <Show when={workspace() && area() === "chat"}>
+                  <box
+                    visible={showWorkspace()}
+                    width={showWorkspace() ? "38%" : 0}
+                    minWidth={showWorkspace() ? 42 : 0}
+                    flexShrink={0}
+                    border={["left"]}
+                    borderColor={activeFocus() === "workspace" ? theme.primary : theme.border}
+                    onMouseDown={() => setFocus("workspace")}
+                  >
+                    <WorkspacePanel
+                      client={connectedClient()}
+                      state={state}
+                      ui={ui}
+                      focused={activeFocus() === "workspace"}
+                      onFocus={() => setFocus("workspace")}
+                      initialTab={workspaceTab()}
+                      openPath={openPath()}
+                      compact
+                    />
+                  </box>
+                </Show>
+              </box>
+            )}
+          </Show>
         </box>
       </box>
-      {modalView()}
+      <box height={1} paddingX={1} flexDirection="row" backgroundColor={theme.backgroundPanel}>
+        <text
+          fg={notice()?.error || state()?.error ? theme.error : theme.textMuted}
+          flexGrow={1}
+          truncate
+        >
+          {busy()
+            ? "Working…"
+            : (notice()?.text ??
+              state()?.error ??
+              `${state()?.connection ?? "offline"}  ${state()?.label ?? "T3 Code"}`)}
+        </text>
+        <text fg={theme.textMuted} onMouseDown={shortcuts}>
+          {dimensions().width >= 86
+            ? "F6 focus  ^P commands  ^T terminal  ^Q quit"
+            : "^P commands  ^Q quit"}
+        </text>
+      </box>
+      <Show when={modal()} keyed>
+        {(current) => {
+          const close = () => {
+            if (modal() === current) setModal(null);
+          };
+          if (current.kind === "choose")
+            return (
+              <DialogSelect
+                title={current.title}
+                options={current.options}
+                onCancel={() => {
+                  close();
+                  current.onCancel?.();
+                }}
+                onSelect={(option) => {
+                  option.value();
+                  close();
+                }}
+              />
+            );
+          if (current.kind === "form")
+            return <FieldForm options={current.options} onClose={close} />;
+          if (current.kind === "secret")
+            return (
+              <SecretForm
+                title="SSH authentication"
+                description={current.description}
+                onSubmit={(value) => {
+                  close();
+                  pendingPassword = undefined;
+                  current.resolve(value);
+                }}
+              />
+            );
+          if (current.kind === "image")
+            return (
+              <Dialog title="Image preview" width={100} onClose={close}>
+                <NativeImagePreview
+                  label={current.label}
+                  load={() => {
+                    if (state()?.environmentId !== current.environmentId)
+                      return Promise.reject(
+                        new Error("Return to the image's environment to load it."),
+                      );
+                    return client().readAsset(current.resource);
+                  }}
+                />
+                <text fg={theme.textMuted} marginTop={1}>
+                  esc close
+                </text>
+              </Dialog>
+            );
+          return (
+            <Dialog title={current.title} width={110} onClose={close}>
+              <scrollbox
+                ref={(element) => {
+                  outputScroll = element;
+                }}
+                maxHeight={Math.max(2, dimensions().height - 8)}
+              >
+                <DetailText content={current.content} language={current.language} />
+              </scrollbox>
+              <text fg={theme.textMuted} marginTop={1}>
+                PgUp/PgDn scroll · esc close
+              </text>
+            </Dialog>
+          );
+        }}
+      </Show>
     </box>
   );
 }

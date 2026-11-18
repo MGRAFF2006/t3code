@@ -9,8 +9,8 @@ import { moveSelection, reconcileSelection, revealSelectionOffset } from "./sele
 export interface DialogSelectOption<T> {
   title: string;
   value: T;
-  description?: string;
-  category?: string;
+  description?: string | undefined;
+  category?: string | undefined;
   searchText?: string;
   disabled?: boolean;
 }
