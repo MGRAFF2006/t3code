@@ -95,7 +95,6 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   const [search, setSearch] = createSignal("");
   const [filter, setFilter] = createSignal<ThreadFilter>("active");
   const [selectedRow, setSelectedRow] = createSignal(0);
-  const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set());
   let sidebarScroll: ScrollBoxRenderable | undefined;
   let outputScroll: ScrollBoxRenderable | undefined;
   const htmlPreviews = new Set<() => Promise<void>>();
@@ -305,6 +304,16 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
         setFocus("main");
       }
     });
+  }
+  function views() {
+    choose(
+      "Switch view",
+      destinations.map((item) => ({
+        title: item.title,
+        description: `Alt+${item.shortcut}${area() === item.area ? " · Current view" : ""}`,
+        run: () => openArea(item.area),
+      })),
+    );
   }
   function toggleWorkspace() {
     if (dimensions().width < 132) {
@@ -918,6 +927,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
         },
       },
       { title: "Open terminal", category: "Workspace", run: terminal },
+      { title: "Switch view", category: "Navigate", run: views },
       ...destinations
         .filter((item) => item.area !== "chat")
         .map((item) => ({
@@ -974,30 +984,22 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
     if (filter() === "settled") return entry.settledOverride === "settled";
     return entry.settledOverride !== "settled";
   }
-  const groups = createMemo(() =>
-    (shell()?.projects ?? []).map((entry) => {
-      const presented = allThreads()
-        .filter((candidate) => candidate.projectId === entry.id && matches(candidate))
-        .map((source) => ({
-          source,
-          id: source.id,
-          createdAt: DateTime.formatIso(source.createdAt),
-          pinOrderKey: source.pinOrderKey,
-          activeOrderKey: source.activeOrderKey,
-          unsettledAt: source.unsettledAt ? DateTime.formatIso(source.unsettledAt) : null,
-        }));
-      return {
-        project: entry,
-        threads: [
-          ...sortPinnedThreadsByOrderKey(presented.filter((value) => value.source.pinnedAt)),
-          ...sortActiveThreadsByOrderKey(presented.filter((value) => !value.source.pinnedAt)),
-        ].map((value) => value.source),
-      };
-    }),
-  );
-  const rows = createMemo(() =>
-    groups().flatMap((group) => (collapsed().has(group.project.id) ? [] : group.threads)),
-  );
+  const rows = createMemo(() => {
+    const presented = allThreads()
+      .filter(matches)
+      .map((source) => ({
+        source,
+        id: source.id,
+        createdAt: DateTime.formatIso(source.createdAt),
+        pinOrderKey: source.pinOrderKey,
+        activeOrderKey: source.activeOrderKey,
+        unsettledAt: source.unsettledAt ? DateTime.formatIso(source.unsettledAt) : null,
+      }));
+    return [
+      ...sortPinnedThreadsByOrderKey(presented.filter((value) => value.source.pinnedAt)),
+      ...sortActiveThreadsByOrderKey(presented.filter((value) => !value.source.pinnedAt)),
+    ].map((value) => value.source);
+  });
   function moveRow(delta: number) {
     setSelectedRow((index) => Math.max(0, Math.min(rows().length - 1, index + delta)));
     sidebarScroll?.scrollChildIntoView(`thread-${rows()[selectedRow()]?.id}`);
@@ -1085,24 +1087,6 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
                 ＋ New thread ^N
               </text>
             </box>
-            <For each={destinations}>
-              {(item) => (
-                <box
-                  height={1}
-                  flexShrink={0}
-                  backgroundColor={area() === item.area ? theme.sidebarSelected : theme.sidebar}
-                  onMouseDown={(event) => {
-                    event.stopPropagation();
-                    openArea(item.area);
-                  }}
-                >
-                  <text fg={area() === item.area ? theme.text : theme.textMuted}>
-                    {area() === item.area ? "› " : "  "}
-                    {item.title}
-                  </text>
-                </box>
-              )}
-            </For>
             <box
               height={1}
               flexShrink={0}
@@ -1110,11 +1094,9 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
               flexDirection="row"
               justifyContent="space-between"
             >
+              <text fg={theme.text}>Threads</text>
               <text fg={theme.textMuted} onMouseDown={filterPicker}>
                 {filter()} ▾
-              </text>
-              <text fg={theme.textMuted} onMouseDown={newProject}>
-                ＋ project
               </text>
             </box>
             <input
@@ -1137,81 +1119,47 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
               flexGrow={1}
               minHeight={0}
             >
-              <For each={groups()}>
-                {(group) => (
-                  <box marginTop={1}>
-                    <box flexDirection="row">
+              <For each={rows()}>
+                {(entry) => {
+                  const selected = () => state()?.selectedThreadId === entry.id;
+                  const cursor = () =>
+                    activeFocus() === "sidebar" && rows()[selectedRow()]?.id === entry.id;
+                  return (
+                    <box
+                      id={`thread-${entry.id}`}
+                      backgroundColor={
+                        selected() || cursor() ? theme.sidebarSelected : theme.sidebar
+                      }
+                      onMouseDown={(event) => {
+                        if (event.button === 2) threadActions(entry);
+                        else openThread(entry.id);
+                      }}
+                    >
                       <text
                         height={1}
-                        fg={theme.textMuted}
-                        flexGrow={1}
                         truncate
-                        onMouseDown={(event) => {
-                          if (event.button === 2) {
-                            projectActions(feature(), group.project.id);
-                            return;
-                          }
-                          setCollapsed((current) => {
-                            const next = new Set(current);
-                            if (next.has(group.project.id)) next.delete(group.project.id);
-                            else next.add(group.project.id);
-                            return next;
-                          });
-                        }}
+                        fg={
+                          entry.pendingRuntimeRequest
+                            ? theme.warning
+                            : selected()
+                              ? theme.text
+                              : theme.textMuted
+                        }
                       >
-                        {collapsed().has(group.project.id) ? "▸ " : "▾ "}
-                        {group.project.title}
-                      </text>
-                      <text fg={theme.textMuted} onMouseDown={() => newThread(group.project.id)}>
-                        ＋
+                        {entry.pinnedAt
+                          ? "◆ "
+                          : entry.pendingRuntimeRequest
+                            ? "! "
+                            : entry.activeRunId
+                              ? "● "
+                              : entry.lastError
+                                ? "× "
+                                : "  "}
+                        {entry.title}
                       </text>
                     </box>
-                    <Show when={!collapsed().has(group.project.id)}>
-                      <For each={group.threads}>
-                        {(entry) => {
-                          const selected = () => state()?.selectedThreadId === entry.id;
-                          const cursor = () =>
-                            activeFocus() === "sidebar" && rows()[selectedRow()]?.id === entry.id;
-                          return (
-                            <box
-                              id={`thread-${entry.id}`}
-                              backgroundColor={
-                                selected() || cursor() ? theme.sidebarSelected : theme.sidebar
-                              }
-                              onMouseDown={(event) => {
-                                if (event.button === 2) threadActions(entry);
-                                else openThread(entry.id);
-                              }}
-                            >
-                              <text
-                                height={1}
-                                truncate
-                                fg={
-                                  entry.pendingRuntimeRequest
-                                    ? theme.warning
-                                    : selected()
-                                      ? theme.text
-                                      : theme.textMuted
-                                }
-                              >
-                                {entry.pinnedAt
-                                  ? "◆ "
-                                  : entry.pendingRuntimeRequest
-                                    ? "! "
-                                    : entry.activeRunId
-                                      ? "● "
-                                      : entry.lastError
-                                        ? "× "
-                                        : "  "}
-                                {entry.title}
-                              </text>
-                            </box>
-                          );
-                        }}
-                      </For>
-                    </Show>
-                  </box>
-                )}
+                  );
+                }}
               </For>
               <Show when={rows().length === 0}>
                 <text fg={theme.textMuted} wrapMode="word" marginTop={1}>
@@ -1266,6 +1214,9 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
                 ⎇ {thread()?.branch}
               </text>
             </Show>
+            <text fg={theme.textMuted} marginLeft={2} flexShrink={0} onMouseDown={views}>
+              Views ▾
+            </text>
             <text fg={theme.textMuted} marginLeft={2} onMouseDown={showChanges}>
               Changes
             </text>

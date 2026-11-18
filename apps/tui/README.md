@@ -24,7 +24,7 @@ For local development, start `vp run dev` separately and use the server address 
 
 ## Navigate
 
-The left sidebar groups threads by project and provides the main destinations. Conversation stays central; Changes, Files, Git and Browser can open alongside it on wide terminals or fill the main pane on smaller ones. Right-click a project or thread for its actions. **Ctrl+P** searches commands, including project settings and server conversation search.
+The left sidebar lists threads across projects, using T3's shared pinned and active ordering. The header's **Views** menu switches between conversation, workspace, pull requests, issues, scheduled tasks, settings and browser. Conversation stays central; Changes, Files, Git and Browser can open alongside it on wide terminals or fill the main pane on smaller ones. Right-click a thread for its actions. **Ctrl+P** searches commands, including project creation/settings and server conversation search.
 
 | Shortcut | Action                                                                        |
 | -------- | ----------------------------------------------------------------------------- |
