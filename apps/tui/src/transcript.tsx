@@ -18,7 +18,16 @@ import {
   turnItemOutputText,
 } from "@t3tools/client-runtime/work-log/item-detail";
 import { useRenderer } from "@opentui/solid";
-import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  Show,
+  untrack,
+  type Accessor,
+} from "solid-js";
 
 import { theme } from "./theme/index.ts";
 import { createSyntax } from "./theme/syntax.ts";
@@ -193,6 +202,8 @@ function Item(props: {
   onFocus?: (() => void) | undefined;
   rowRef?: ((node: Renderable) => void) | undefined;
   expandAll?: boolean | undefined;
+  expanded: boolean;
+  onToggle: () => void;
   highlighted?: boolean | undefined;
   onOpenLinks?: (() => void) | undefined;
   cwd?: string | undefined;
@@ -215,7 +226,6 @@ function Item(props: {
     const value = secret();
     return value ? secretRequestDisplay(value, visibility()) : null;
   });
-  const [expanded, setExpanded] = createSignal(false);
   const [visibleImages, setVisibleImages] = createSignal<ReadonlySet<number>>(new Set());
   const images = createMemo(() => {
     const value = props.item;
@@ -262,32 +272,38 @@ function Item(props: {
     props.item.type === "system_notice" ||
     props.item.type === "notification" ||
     secretDisplay()?.kind === "pending" ||
-    expanded() ||
+    props.expanded ||
     props.expandAll ||
     props.highlighted;
   const [commandOutput, setCommandOutput] = createSignal<CommandOutputView | null>(null);
   const [outputError, setOutputError] = createSignal<string | null>(null);
   const [outputRevision, setOutputRevision] = createSignal(0);
+  const outputKey = createMemo(() =>
+    props.item.type === "command_execution" ? props.item.id : null,
+  );
+  const bodyVisible = createMemo(showBody);
   // Expanded command rows own their bounded live output subscription.
   createEffect(() => {
     outputRevision();
-    if (!showBody() || props.item.type !== "command_execution" || !props.subscribeOutput) {
+    if (!bodyVisible() || !outputKey() || !props.subscribeOutput) {
       setCommandOutput(null);
       return;
     }
     setOutputError(null);
-    const stop = props.subscribeOutput(
-      (frame) =>
-        setCommandOutput((previous) =>
-          applyCommandOutputFrame(previous ?? EMPTY_COMMAND_OUTPUT, frame),
-        ),
-      (error) => setOutputError(error.message),
+    const stop = untrack(() =>
+      props.subscribeOutput!(
+        (frame) =>
+          setCommandOutput((previous) =>
+            applyCommandOutputFrame(previous ?? EMPTY_COMMAND_OUTPUT, frame),
+          ),
+        (error) => setOutputError(error.message),
+      ),
     );
     onCleanup(stop);
   });
   const toggle = () => {
     props.onFocus?.();
-    setExpanded((value) => !value);
+    props.onToggle();
   };
   const item = () => props.item;
   const streaming = () => {
@@ -538,14 +554,18 @@ function Item(props: {
 
 function WorkGroup(props: {
   row: TranscriptRow;
+  grouped: boolean;
   expanded: boolean;
   onToggle: () => void;
   onFocus?: (() => void) | undefined;
   rowRef?: ((entry: OrchestrationV2ProjectedTurnItem, node: Renderable) => void) | undefined;
   onLoadWork?: ((entry: OrchestrationV2ProjectedTurnItem) => Promise<void>) | undefined;
-  renderItem: (entry: OrchestrationV2ProjectedTurnItem) => ReturnType<typeof Item>;
+  renderItem: (entry: Accessor<OrchestrationV2ProjectedTurnItem>) => ReturnType<typeof Item>;
 }) {
   const summary = createMemo(() => summarizeTranscriptWork(props.row.entries));
+  const entries = createMemo(
+    () => new Map(props.row.entries.map((entry) => [transcriptItemKey(entry), entry])),
+  );
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   let group: Renderable | undefined;
@@ -577,7 +597,7 @@ function WorkGroup(props: {
       });
   });
   createEffect(() => {
-    if (group && !props.expanded) {
+    if (group && props.grouped && !props.expanded) {
       for (const entry of props.row.entries) props.rowRef?.(entry, group);
     }
   });
@@ -588,24 +608,28 @@ function WorkGroup(props: {
         props.rowRef?.(props.row.entries[0]!, node);
       }}
     >
-      <text
-        paddingLeft={1}
-        height={1}
-        truncate
-        fg={summary().hasFailure ? theme.warning : theme.textMuted}
-        onMouseDown={() => {
-          props.onFocus?.();
-          if (error()) {
-            requestedCursor = undefined;
-            setError(null);
-          } else props.onToggle();
-        }}
-      >
-        {`${icon(props.expanded ? "collapse" : "expand")} ${summary().label}${summary().active ? ` · ${summary().active} running` : ""}${summary().hasFailure ? " · failed work" : ""}`}
-      </text>
-      <Show when={props.expanded}>
-        <box paddingLeft={1}>
-          <For each={props.row.entries}>{(entry) => props.renderItem(entry)}</For>
+      <Show when={props.grouped}>
+        <text
+          paddingLeft={1}
+          height={1}
+          truncate
+          fg={summary().hasFailure ? theme.warning : theme.textMuted}
+          onMouseDown={() => {
+            props.onFocus?.();
+            if (error()) {
+              requestedCursor = undefined;
+              setError(null);
+            } else props.onToggle();
+          }}
+        >
+          {`${icon(props.expanded ? "collapse" : "expand")} ${summary().label}${summary().active ? ` · ${summary().active} running` : ""}${summary().hasFailure ? " · failed work" : ""}`}
+        </text>
+      </Show>
+      <Show when={!props.grouped || props.expanded}>
+        <box paddingLeft={props.grouped ? 1 : 0}>
+          <For each={[...entries().keys()]}>
+            {(key) => props.renderItem(() => entries().get(key)!)}
+          </For>
           <Show when={loading()}>
             <text fg={theme.textMuted}>Loading earlier work…</text>
           </Show>
@@ -658,12 +682,14 @@ export function Transcript(props: {
   const syntax = createSyntax(renderer.nativeScene);
   onCleanup(() => syntax.destroy());
   const [expandedGroups, setExpandedGroups] = createSignal<ReadonlySet<string>>(new Set());
+  const [expandedItems, setExpandedItems] = createSignal<ReadonlySet<string>>(new Set());
   const [collapsedGroups, setCollapsedGroups] = createSignal<ReadonlySet<string>>(new Set());
   let previouslyExpanded = Boolean(props.expandAll);
   createEffect(() => {
     const expanded = Boolean(props.expandAll);
     if (previouslyExpanded !== expanded) {
       setExpandedGroups(new Set<string>());
+      setExpandedItems(new Set<string>());
       setCollapsedGroups(new Set<string>());
     }
     previouslyExpanded = expanded;
@@ -717,61 +743,78 @@ export function Transcript(props: {
             (!row().entries.some((entry) => collapsedGroups().has(transcriptItemKey(entry))) &&
               (Boolean(props.expandAll) ||
                 row().entries.some((entry) => expandedGroups().has(transcriptItemKey(entry)))));
-          const renderItem = (entry: OrchestrationV2ProjectedTurnItem) => (
+          const renderItem = (entry: Accessor<OrchestrationV2ProjectedTurnItem>) => (
             <Item
-              item={entry.item}
-              visibility={entry.visibility}
-              onOpenOriginal={() => props.onOpenThread?.(entry.sourceThreadId)}
+              item={entry().item}
+              visibility={entry().visibility}
+              onOpenOriginal={() => props.onOpenThread?.(entry().sourceThreadId)}
               syntax={syntax}
               wordWrap={props.wordWrap}
-              onOpen={() => props.onOpenItem?.(entry)}
+              onOpen={() => props.onOpenItem?.(entry())}
               onOpenFile={props.onOpenFile}
               onFocus={props.onFocus}
               expandAll={props.expandAll}
-              highlighted={transcriptEntryMatches(entry, props.highlightedEntryId)}
+              expanded={expandedItems().has(transcriptItemKey(entry()))}
+              onToggle={() => {
+                const itemKey = transcriptItemKey(entry());
+                const open = !expandedItems().has(itemKey);
+                setExpandedItems((current) => {
+                  const next = new Set(current);
+                  if (open) next.add(itemKey);
+                  else next.delete(itemKey);
+                  return next;
+                });
+                if (!isGroup())
+                  setExpandedGroups((current) => {
+                    const next = new Set(current);
+                    if (open) next.add(itemKey);
+                    else next.delete(itemKey);
+                    return next;
+                  });
+              }}
+              highlighted={transcriptEntryMatches(entry(), props.highlightedEntryId)}
               cwd={props.cwd}
-              onOpenLinks={props.onOpenLinks ? () => props.onOpenLinks!(entry) : undefined}
+              onOpenLinks={props.onOpenLinks ? () => props.onOpenLinks!(entry()) : undefined}
               subscribeOutput={
                 props.onCommandOutput
-                  ? (onFrame, onError) => props.onCommandOutput!(entry, onFrame, onError)
+                  ? (onFrame, onError) => props.onCommandOutput!(entry(), onFrame, onError)
                   : undefined
               }
               onOpenHtml={props.onOpenHtml}
               onPreviewAsset={props.onPreviewAsset}
               loadAsset={props.loadAsset}
-              onCopy={props.onCopyItem ? () => props.onCopyItem?.(entry) : props.onCopy}
+              onCopy={props.onCopyItem ? () => props.onCopyItem?.(entry()) : props.onCopy}
               onSecretRequest={props.onSecretRequest}
-              rowRef={(node) => props.rowRef?.(entry, node)}
+              rowRef={(node) => props.rowRef?.(entry(), node)}
             />
           );
           return (
             <Show when={visible()}>
-              <Show when={isGroup()} fallback={renderItem(row().entries[0]!)}>
-                <WorkGroup
-                  row={row()}
-                  expanded={expanded()}
-                  onToggle={() => {
-                    const close = expanded();
-                    const keys = row().entries.map(transcriptItemKey);
-                    setExpandedGroups((current) => {
-                      const next = new Set(current);
-                      if (close) for (const key of keys) next.delete(key);
-                      else next.add(key);
-                      return next;
-                    });
-                    setCollapsedGroups((current) => {
-                      const next = new Set(current);
-                      if (close) next.add(key);
-                      else for (const key of keys) next.delete(key);
-                      return next;
-                    });
-                  }}
-                  onLoadWork={props.onLoadWork}
-                  onFocus={props.onFocus}
-                  rowRef={props.rowRef}
-                  renderItem={renderItem}
-                />
-              </Show>
+              <WorkGroup
+                row={row()}
+                grouped={isGroup()}
+                expanded={expanded()}
+                onToggle={() => {
+                  const close = expanded();
+                  const keys = row().entries.map(transcriptItemKey);
+                  setExpandedGroups((current) => {
+                    const next = new Set(current);
+                    if (close) for (const key of keys) next.delete(key);
+                    else next.add(key);
+                    return next;
+                  });
+                  setCollapsedGroups((current) => {
+                    const next = new Set(current);
+                    if (close) next.add(key);
+                    else for (const key of keys) next.delete(key);
+                    return next;
+                  });
+                }}
+                onLoadWork={props.onLoadWork}
+                onFocus={props.onFocus}
+                rowRef={props.rowRef}
+                renderItem={renderItem}
+              />
             </Show>
           );
         }}
