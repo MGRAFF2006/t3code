@@ -3,7 +3,6 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as NodeDns from "node:dns";
 import * as NodeOS from "node:os";
-import * as NodeSea from "node:sea";
 
 export const Platform = Context.Reference<NodeJS.Platform>("@t3tools/shared/HostProcess/Platform", {
   defaultValue: () => process.platform,
@@ -87,7 +86,8 @@ export const InvokedAs = Context.Reference<string>("@t3tools/shared/HostProcess/
 });
 
 export const IsExecutable = Context.Reference<boolean>("@t3tools/shared/HostProcess/IsExecutable", {
-  defaultValue: () => NodeSea.isSea(),
+  // Bun omits node:sea; importing this host boundary must still work in the terminal client.
+  defaultValue: () => process.getBuiltinModule("node:sea")?.isSea() ?? false,
 });
 
 export class HostnameLookupError extends Schema.TaggedError<HostnameLookupError>()(

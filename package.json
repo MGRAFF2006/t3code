@@ -5,6 +5,7 @@
   "scripts": {
     "prepare": "vp config --no-agent",
     "dev": "node scripts/dev-runner.ts dev",
+    "tui": "vp run --filter @t3tools/tui dev",
     "profile:startup": "node scripts/profile-startup.mjs",
     "dev:share": "node scripts/dev-runner.ts dev --share",
     "dev:server": "node scripts/dev-runner.ts dev:server",

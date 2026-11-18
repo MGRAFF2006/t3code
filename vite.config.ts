@@ -19,6 +19,7 @@ const TEST_CONFIG_PACKAGES = [
   "apps/desktop",
   "apps/mobile",
   "apps/server",
+  "apps/tui",
   "apps/web",
   "packages/client-runtime",
 ];
@@ -324,6 +325,17 @@ export default defineConfig({
     },
     overrides: [
       {
+        // Solid runs components once and owns mutable renderable refs through its signals.
+        files: ["apps/tui/src/**/*.{ts,tsx}"],
+        rules: {
+          "react/immutability": "off",
+          "react/refs": "off",
+          "react/purity": "off",
+          "react/static-components": "off",
+          "react/no-unstable-nested-components": "off",
+        },
+      },
+      {
         files: [
           "**/*.{test,spec,testkit}.{ts,tsx}",
           "**/{test,tests,testkit,testing,fixtures,integration}/**",
@@ -357,6 +369,7 @@ export default defineConfig({
         files: [
           "packages/client-runtime/src/state/runtime.ts",
           "packages/client-runtime/src/state/vcsAction.ts",
+          "apps/tui/src/rpc/bridge.ts",
         ],
         rules: {
           "t3code/no-rpc-permission-bypass": [

@@ -8,6 +8,8 @@
 
 <p align="center">The open-source control plane for coding agents.</p>
 
+This fork adds a [terminal client](./apps/tui/README.md) built with OpenCode's MIT-licensed presentation components and T3's backend. Run `vp run tui` after installing dependencies and Bun. It connects to existing T3 environments; agent execution stays in T3.
+
 <p align="center">
   <a href="https://t3.codes/download"><strong>Download</strong></a> ·
   <a href="https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824">iOS</a> ·

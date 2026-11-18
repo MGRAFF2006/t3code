@@ -60,7 +60,7 @@ export interface ManagedRelayDpopProofInput {
 export class ManagedRelayDpopKeyLoadError extends Schema.TaggedError<ManagedRelayDpopKeyLoadError>()(
   "ManagedRelayDpopKeyLoadError",
   {
-    keyStore: Schema.Literals(["expo-secure-store", "indexed-db"]),
+    keyStore: Schema.Literals(["expo-secure-store", "indexed-db", "file"]),
     cause: Schema.Defect(),
   },
 ) {
