@@ -192,14 +192,52 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
     }
   }
   function choose(title: string, options: Choice[]) {
+    const check = scope();
     setModal({
       kind: "choose",
       title,
-      options: options.map(({ run: value, ...option }) => ({ ...option, value })),
+      options: options.map(({ run: action, ...option }) => ({
+        ...option,
+        value: () => {
+          try {
+            check();
+            action();
+          } catch (error) {
+            notify(error instanceof Error ? error.message : String(error), true);
+          }
+        },
+      })),
     });
   }
   function form(options: FieldFormOptions) {
-    setModal({ kind: "form", options });
+    const check = scope();
+    const guarded: FieldFormOptions = {
+      ...options,
+      onSubmit: async (values) => {
+        if (notice()?.error) setNotice(null);
+        try {
+          check();
+          await options.onSubmit(values);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          notify(message, true);
+          if (modal() === null)
+            setModal({
+              kind: "form",
+              options: {
+                ...guarded,
+                description: [options.description, message].filter(Boolean).join("\n\n"),
+                fields: options.fields.map((field) => ({
+                  ...field,
+                  value: values[field.name] ?? field.value ?? "",
+                })),
+              },
+            });
+          throw error;
+        }
+      },
+    };
+    setModal({ kind: "form", options: guarded });
   }
   function confirm(title: string, message: string, action: () => Promise<void>, label = "Confirm") {
     choose(title, [
@@ -382,6 +420,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
     );
   }
   function newThread(projectId?: string) {
+    const check = scope();
     if (!projectId) {
       choose("New thread", [
         ...(state()?.shell?.projects ?? []).map((entry) => ({
@@ -395,6 +434,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
     }
     void run(async () => {
       if (!(await beforeNavigate())) return;
+      check();
       await client().createThread(projectId);
       setArea("chat");
       setFocus("main");
