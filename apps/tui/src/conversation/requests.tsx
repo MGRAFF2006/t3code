@@ -23,6 +23,9 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import type { FeatureProps } from "../ui/controller.ts";
 import { request } from "../rpc/request.ts";
 import { theme } from "../theme/index.ts";
+import { attachmentActions } from "./attachments.ts";
+import type { LocalAttachment } from "../runtime/attachments.ts";
+import { answerLinkRequest } from "../management/link-request.ts";
 
 interface Action {
   key: string;
@@ -34,6 +37,7 @@ interface Action {
 }
 
 const cachedDrafts = new Map<string, PendingUserInputDraftAnswer>();
+const cachedAttachments = new Map<string, ReadonlyArray<LocalAttachment>>();
 
 export function RequestCards(
   props: FeatureProps & {
@@ -47,12 +51,22 @@ export function RequestCards(
   const actionRows = new Map<string, Renderable>();
   const [cursor, setCursor] = createSignal(0);
   const [drafts, setDrafts] = createSignal<Record<string, PendingUserInputDraftAnswer>>({});
+  const [attachmentDrafts, setAttachmentDrafts] = createSignal<
+    Record<string, ReadonlyArray<LocalAttachment>>
+  >({});
+  const [responding, setResponding] = createSignal<ReadonlySet<string>>(new Set());
   const projection = () => props.state()?.thread;
   const pending = createMemo(() => {
     const value = projection();
     return value ? derivePendingThreadRequests(value) : { approvals: [], userInputs: [] };
   });
   const draftKey = (id: RuntimeRequestId, question: string) => `${scope}/${id}/${question}`;
+  const inOriginalThread = () =>
+    `${props.state()?.environmentId}/${props.state()?.thread?.thread.id}` === scope;
+  const attachmentsFor = (id: RuntimeRequestId, question: string) =>
+    attachmentDrafts()[draftKey(id, question)] ??
+    cachedAttachments.get(draftKey(id, question)) ??
+    [];
   const currentDraft = (id: RuntimeRequestId, question: OrchestrationV2UserInputQuestion) =>
     drafts()[draftKey(id, question.id)] ??
     cachedDrafts.get(draftKey(id, question.id)) ??
@@ -68,6 +82,8 @@ export function RequestCards(
   const execute = (command: OrchestrationV2Command) => {
     props.onFocus();
     void props.ui.run(async () => {
+      if (!inOriginalThread())
+        throw new Error("Return to the original conversation to answer this request.");
       await request(props.client, ORCHESTRATION_V2_WS_METHODS.dispatchCommand, command);
       props.onDone();
     });
@@ -171,7 +187,10 @@ export function RequestCards(
       const answers: Record<string, PendingUserInputDraftAnswer> = {};
       for (const question of input.questions) {
         const start = actions.length;
-        answers[question.id] = currentDraft(input.requestId, question);
+        answers[question.id] = {
+          ...currentDraft(input.requestId, question),
+          attachmentCount: attachmentsFor(input.requestId, question.id).length,
+        };
         for (const option of question.options) {
           const value = option.value ?? option.label;
           actions.push({
@@ -213,6 +232,8 @@ export function RequestCards(
                 ],
                 submitLabel: "Use answer",
                 onSubmit: async (values) => {
+                  if (!inOriginalThread() || responding().has(input.requestId))
+                    throw new Error("Return to the original request before changing its answer.");
                   update(
                     input.requestId,
                     question,
@@ -225,6 +246,35 @@ export function RequestCards(
                 },
               }),
           });
+        if (
+          props.state()?.config?.environment.capabilities.questionAttachments &&
+          question.allowCustomAnswer !== false
+        )
+          actions.push({
+            key: `${input.requestId}/${question.id}/attachments`,
+            label: attachmentsFor(input.requestId, question.id).length
+              ? `Manage ${attachmentsFor(input.requestId, question.id).length} answer attachments`
+              : "Attach an image or file…",
+            run: () =>
+              attachmentActions(
+                props,
+                attachmentsFor(input.requestId, question.id),
+                (next) => {
+                  const environmentId = props.state()?.environmentId;
+                  if (environmentId)
+                    props.client.releaseLocalAttachments(
+                      environmentId,
+                      attachmentsFor(input.requestId, question.id).filter(
+                        (value) => !next.some((attachment) => attachment.id === value.id),
+                      ),
+                    );
+                  const key = draftKey(input.requestId, question.id);
+                  cachedAttachments.set(key, next);
+                  setAttachmentDrafts((values) => ({ ...values, [key]: next }));
+                },
+                () => inOriginalThread() && !responding().has(input.requestId),
+              ),
+          });
         const firstAction = actions[start];
         if (firstAction)
           firstAction.section = `${question.header ? `${question.header}: ` : ""}${question.question}${question.multiSelect ? " (select all that apply)" : ""}`;
@@ -232,13 +282,36 @@ export function RequestCards(
       const values = buildPendingUserInputAnswers(input.questions, answers);
       actions.push({
         key: `${input.requestId}/submit`,
-        label: "Send answers",
+        label: responding().has(input.requestId) ? "Sending answers…" : "Send answers",
         run: () => {
+          if (responding().has(input.requestId)) return;
           if (values === null) {
             props.ui.notify("Answer each question before sending.", true);
             return;
           }
-          respond(input.requestId, { answers: values });
+          const attachments = Object.fromEntries(
+            input.questions.flatMap((question) => {
+              const selected = attachmentsFor(input.requestId, question.id);
+              return selected.length ? [[question.id, selected]] : [];
+            }),
+          );
+          setResponding((current) => new Set([...current, input.requestId]));
+          void props.ui.run(async () => {
+            try {
+              if (!inOriginalThread())
+                throw new Error("Return to the original conversation to answer this request.");
+              await props.client.answer(input.requestId, values, attachments);
+              for (const question of input.questions) {
+                cachedDrafts.delete(draftKey(input.requestId, question.id));
+                cachedAttachments.delete(draftKey(input.requestId, question.id));
+              }
+              props.onDone();
+            } finally {
+              setResponding(
+                (current) => new Set([...current].filter((id) => id !== input.requestId)),
+              );
+            }
+          });
         },
       });
       if (input.dismissible)
@@ -260,8 +333,30 @@ export function RequestCards(
         id: input.requestId,
         title: "Your agent has a question",
         text: "",
-        actions,
+        actions: actions.map((action) => ({
+          ...action,
+          run: () => {
+            if (!responding().has(input.requestId)) action.run();
+          },
+        })),
       };
+    }),
+    ...(projection()?.visibleTurnItems ?? []).flatMap((entry) => {
+      const item = entry.item;
+      if (
+        entry.visibility !== "local" ||
+        item.type !== "link_request" ||
+        item.linkStatus !== "pending"
+      )
+        return [];
+      const actions: Action[] = [
+        {
+          key: `${item.id}/link`,
+          label: "Choose machine and access…",
+          run: () => answerLinkRequest(props, item),
+        },
+      ];
+      return [{ id: item.id, title: "Link another environment", text: item.reason, actions }];
     }),
   ]);
   const allActions = createMemo(() => cards().flatMap((card) => card.actions));

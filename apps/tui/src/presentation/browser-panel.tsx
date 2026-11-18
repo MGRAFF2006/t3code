@@ -11,6 +11,7 @@ import type { Choice, FeatureProps } from "../ui/controller.ts";
 import { request, subscribe } from "../rpc/request.ts";
 import { createTerminalCapabilities, terminalHyperlink } from "./terminal.ts";
 import { theme } from "../theme/index.ts";
+import { controlBrowser } from "./browser-control.ts";
 
 const viewportFor = (value: string): PreviewViewportSetting =>
   value === "phone"
@@ -109,8 +110,8 @@ export function BrowserPanel(props: FeatureProps) {
     return {
       id,
       check: () => {
-        if (environment() !== environmentId)
-          throw new Error("Return to this browser's environment to continue.");
+        if (environment() !== environmentId || threadId() !== id)
+          throw new Error("Return to this browser's environment and thread to continue.");
       },
     };
   };
@@ -170,6 +171,55 @@ export function BrowserPanel(props: FeatureProps) {
     const tabId = value.tabId;
     const nav = value.navStatus;
     const actions: Choice[] = [];
+    if (value.runtime === "server" || value.headless) {
+      const perform = async (input: Parameters<typeof controlBrowser>[3]) => {
+        target.check();
+        const access = await props.client.previewStreamAccess();
+        target.check();
+        await controlBrowser(access, target.id, tabId, input, target.check);
+      };
+      actions.push({
+        title: "Navigate to URL…",
+        description: "Takes control briefly, then releases it.",
+        run: () =>
+          props.ui.form({
+            title: "Navigate browser",
+            description: "Takes control of the shared page for this action, then releases it.",
+            fields: [
+              {
+                name: "url",
+                label: "URL",
+                required: true,
+                value: nav._tag === "Idle" ? "" : nav.url,
+              },
+            ],
+            submitLabel: "Navigate",
+            onSubmit: async ({ url = "" }) => {
+              const parsed = new URL(url);
+              if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+                throw new Error("Enter an http or https URL.");
+              await perform({ type: "navigate", url: parsed.href });
+            },
+          }),
+      });
+      if (value.canGoBack)
+        actions.push({
+          title: "Back",
+          description: "Takes control briefly, then releases it.",
+          run: () => void props.ui.run(() => perform({ type: "history", delta: -1 })),
+        });
+      if (value.canGoForward)
+        actions.push({
+          title: "Forward",
+          description: "Takes control briefly, then releases it.",
+          run: () => void props.ui.run(() => perform({ type: "history", delta: 1 })),
+        });
+      if (nav._tag === "Loading")
+        actions.push({
+          title: "Stop loading",
+          run: () => void props.ui.run(() => perform({ type: "stopLoading" })),
+        });
+    }
     if (nav._tag !== "Idle")
       actions.push({
         title: "Open URL in this device's browser",
@@ -267,6 +317,23 @@ export function BrowserPanel(props: FeatureProps) {
         ),
     });
     actions.push({
+      title: "Clear cache…",
+      run: () =>
+        props.ui.confirm(
+          "Clear this tab's cache?",
+          "Removes cached page resources for this browser profile.",
+          async () => {
+            target.check();
+            await request(props.client, WS_METHODS.previewAdjust, {
+              threadId: target.id,
+              tabId,
+              clear: "cache",
+            });
+          },
+          "Clear cache",
+        ),
+    });
+    actions.push({
       title: "Close tab",
       run: () => {
         void props.ui.run(async () => {
@@ -277,6 +344,56 @@ export function BrowserPanel(props: FeatureProps) {
       },
     });
     props.ui.choose(nav._tag === "Idle" ? "Browser tab" : nav.title || nav.url, actions);
+  }
+  function serverActions(server: DiscoveredLocalServer) {
+    const target = destination();
+    const choices: Choice[] = [
+      {
+        title: "Open in shared browser",
+        run: () => {
+          target.check();
+          newTab(server.url);
+        },
+      },
+      {
+        title: "Open URL in this device's browser",
+        run: () => {
+          target.check();
+          props.ui.openBrowser?.(server.url);
+        },
+      },
+    ];
+    if (server.pid !== null) {
+      const pid = server.pid;
+      choices.push({
+        title: "Stop development server",
+        description: `${server.processName ?? "Process"} · PID ${pid} · port ${server.port}`,
+        run: () =>
+          props.ui.confirm(
+            "Stop development server?",
+            "Stops this server's process group. T3 refuses shared groups that would also stop an agent or terminal shell.",
+            async () => {
+              target.check();
+              await request(props.client, WS_METHODS.previewStopLocalServer, {
+                pid,
+                port: server.port,
+              });
+            },
+            "Stop server",
+          ),
+      });
+    }
+    props.ui.choose(server.url, choices);
+  }
+  function developmentServers() {
+    props.ui.choose(
+      "Development servers",
+      servers().map((server) => ({
+        title: server.url,
+        description: server.processName ?? undefined,
+        run: () => serverActions(server),
+      })),
+    );
   }
   function profileActions() {
     if (!threadId()) {
@@ -315,7 +432,7 @@ export function BrowserPanel(props: FeatureProps) {
     );
   }
   useKeyboard((key) => {
-    if (!props.focused || props.ui.modal()) return;
+    if (!props.focused || props.ui.modal() || key.ctrl || key.meta) return;
     if (key.name === "up" || key.name === "down") {
       key.preventDefault();
       setSelected((value) =>
@@ -334,6 +451,10 @@ export function BrowserPanel(props: FeatureProps) {
       key.preventDefault();
       void refresh();
     }
+    if (key.name === "s" && !key.ctrl) {
+      key.preventDefault();
+      developmentServers();
+    }
   });
   return (
     <box flexGrow={1} minHeight={0} paddingX={2} onMouseDown={props.onFocus}>
@@ -343,6 +464,9 @@ export function BrowserPanel(props: FeatureProps) {
         </text>
         <text fg={theme.textMuted} onMouseDown={profileActions}>
           Profiles
+        </text>
+        <text fg={theme.textMuted} onMouseDown={developmentServers}>
+          Servers
         </text>
         <text fg={theme.primary} onMouseDown={() => newTab()}>
           New tab [N]
@@ -437,7 +561,7 @@ export function BrowserPanel(props: FeatureProps) {
                 {(server) => (
                   <text
                     fg={theme.primary}
-                    onMouseDown={() => newTab(server.url)}
+                    onMouseDown={() => serverActions(server)}
                   >{`${server.url}${server.processName ? ` · ${server.processName}` : ""}`}</text>
                 )}
               </For>
@@ -445,7 +569,7 @@ export function BrowserPanel(props: FeatureProps) {
           </Show>
         </scrollbox>
         <text height={1} fg={theme.textMuted}>
-          ↑↓ select · Enter tab actions · N new tab · R refresh
+          ↑↓ select · Enter tab actions · N new tab · R refresh · S servers
         </text>
       </Show>
     </box>

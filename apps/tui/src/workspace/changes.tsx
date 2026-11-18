@@ -1,9 +1,10 @@
 import { DiffRenderable, pathToFiletype, type ScrollBoxRenderable } from "@opentui/core";
-import { extend, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
+import { extend, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createMemo, createResource, createSignal, For, onCleanup, Show } from "solid-js";
 import { WS_METHODS, type ReviewDiffPreviewSource } from "@t3tools/contracts";
 import { request } from "../rpc/request.ts";
 import { theme } from "../theme/index.ts";
+import { useActiveKeyboard } from "../ui/keyboard.ts";
 import { createSyntax } from "../theme/syntax.ts";
 import { workspaceFilePath } from "./logic.ts";
 import type { WorkspaceContext } from "./types.ts";
@@ -201,34 +202,84 @@ export function ChangesPanel(
     props.ui.openFile(root ? workspaceFilePath(root, props.cwd() ?? root, file.path) : file.path);
   }
 
-  useKeyboard((event) => {
-    if (!props.visible || !props.focused || props.ui.modal() || event.meta) return;
-    if (event.name === "s") chooseScope();
-    else if (event.name === "/") chooseFile();
-    else if (event.name === "o") openCurrentFile();
-    else if (event.name === "v") toggleSplit();
-    else if (event.name === "w") setIgnoreWhitespace((value) => !value);
-    else if (event.name === "r") {
-      setRevision((value) => value + 1);
-      void props.ui.run(props.refresh);
-    } else if (event.name === "escape") setReviewing(false);
-    else if (event.name === "return" || event.name === "right") setReviewing(true);
-    else if (reviewing()) {
-      if (event.name === "up") diffScroll?.scrollBy(-1);
-      else if (event.name === "down") diffScroll?.scrollBy(1);
-      else if (event.name === "pageup") diffScroll?.scrollBy(-1, "viewport");
-      else if (event.name === "pagedown") diffScroll?.scrollBy(1, "viewport");
-      else if (event.name === "home") diffScroll?.scrollTo(0);
-      else if (event.name === "end") diffScroll?.scrollTo(Infinity);
-      else if (event.name === "n") select(active() + 1);
-      else if (event.name === "p") select(active() - 1);
+  async function fileVersions() {
+    const target = source();
+    const file = currentFile();
+    const cwd = props.cwd();
+    const destination = environment();
+    if (!target || !file || !cwd) return props.ui.notify("Choose a changed file first.");
+    const current = () =>
+      cwd === props.cwd() &&
+      destination === environment() &&
+      source()?.diffHash === target.diffHash &&
+      currentFile()?.path === file.path;
+    const result = await request(props.client, WS_METHODS.reviewGetDiffFileContents, {
+      cwd,
+      sourceKind: target.kind,
+      changeType: file.changeType ?? "change",
+      baseRef: target.baseRef,
+      headRef: target.headRef,
+      oldPath: file.previousPath ?? file.path,
+      newPath: file.path,
+    });
+    if (!current()) throw new Error("The selected diff changed. Open file versions again.");
+    const show = (label: string, contents: string) => {
+      if (!current()) throw new Error("The selected diff changed. Open file versions again.");
+      const limit = 1024 * 1024;
+      props.ui.text(
+        label,
+        contents.length > limit
+          ? `${contents.slice(0, limit)}\n\nPreview truncated at 1,048,576 characters.`
+          : contents || "This version has no contents.",
+        pathToFiletype(file.path) ?? "text",
+      );
+    };
+    props.ui.choose("File versions", [
+      {
+        title: "Before change",
+        description: file.previousPath ?? file.path,
+        run: () => show(`Before: ${file.previousPath ?? file.path}`, result.oldContents),
+      },
+      {
+        title: "After change",
+        description: file.path,
+        run: () => show(`After: ${file.path}`, result.newContents),
+      },
+    ]);
+  }
+
+  useActiveKeyboard(
+    () => props.visible && props.focused && !props.ui.modal(),
+    (event) => {
+      if (event.meta) return;
+      if (event.name === "s") chooseScope();
+      else if (event.name === "f") void props.ui.run(fileVersions);
+      else if (event.name === "/") chooseFile();
+      else if (event.name === "o") openCurrentFile();
+      else if (event.name === "v") toggleSplit();
+      else if (event.name === "w") setIgnoreWhitespace((value) => !value);
+      else if (event.name === "r") {
+        setRevision((value) => value + 1);
+        void props.ui.run(props.refresh);
+      } else if (event.name === "escape") setReviewing(false);
+      else if (event.name === "return" || event.name === "right") setReviewing(true);
+      else if (reviewing()) {
+        if (event.name === "up") diffScroll?.scrollBy(-1);
+        else if (event.name === "down") diffScroll?.scrollBy(1);
+        else if (event.name === "pageup") diffScroll?.scrollBy(-1, "viewport");
+        else if (event.name === "pagedown") diffScroll?.scrollBy(1, "viewport");
+        else if (event.name === "home") diffScroll?.scrollTo(0);
+        else if (event.name === "end") diffScroll?.scrollTo(Infinity);
+        else if (event.name === "n") select(active() + 1);
+        else if (event.name === "p") select(active() - 1);
+        else return;
+      } else if (event.name === "up") select(active() - 1);
+      else if (event.name === "down") select(active() + 1);
       else return;
-    } else if (event.name === "up") select(active() - 1);
-    else if (event.name === "down") select(active() + 1);
-    else return;
-    event.preventDefault();
-    event.stopPropagation();
-  });
+      event.preventDefault();
+      event.stopPropagation();
+    },
+  );
 
   return (
     <box visible={props.visible} flexGrow={1} minHeight={0} onMouseDown={props.onFocus}>
@@ -243,6 +294,9 @@ export function ChangesPanel(
         <text fg={theme.textMuted} onMouseDown={chooseFile}>{`${files().length} files`}</text>
         <text fg={theme.textMuted} onMouseDown={() => toggleSplit()}>
           {split() ? "Split" : "Unified"}
+        </text>
+        <text fg={theme.textMuted} onMouseDown={() => void props.ui.run(fileVersions)}>
+          Versions
         </text>
       </box>
       <Show when={metadata.loading}>
@@ -352,8 +406,8 @@ export function ChangesPanel(
       </box>
       <text fg={theme.textMuted} flexShrink={0} paddingX={1}>
         {reviewing()
-          ? "↑↓ scroll · n/p file · esc files · o open · s scope"
-          : "↑↓ file · enter review · / find · s scope · v view · w whitespace"}
+          ? "↑↓ scroll · n/p file · esc files · f versions · o open · s scope"
+          : "↑↓ file · enter review · / find · f versions · s scope · v view · w whitespace"}
       </text>
     </box>
   );

@@ -11,6 +11,7 @@ import {
 import type { Choice, FeatureProps } from "../ui/controller.ts";
 import { request } from "../rpc/request.ts";
 import { theme } from "../theme/index.ts";
+import { reactionActions } from "./reactions.ts";
 import {
   Action,
   createProjectScope,
@@ -312,7 +313,18 @@ export function IssuesPanel(props: FeatureProps) {
           ...(templates.externalTemplates ?? []).map((template) => ({
             title: template.name,
             description: "This template requires the tracker's website.",
-            run: () => props.ui.text(template.name, template.url),
+            run: () =>
+              props.ui.choose(template.name, [
+                ...(props.ui.openBrowser
+                  ? [
+                      {
+                        title: "Open template in browser",
+                        run: () => props.ui.openBrowser?.(template.url),
+                      },
+                    ]
+                  : []),
+                { title: "Show link", run: () => props.ui.text(template.name, template.url) },
+              ]),
           })),
         ]);
       });
@@ -364,6 +376,40 @@ export function IssuesPanel(props: FeatureProps) {
       refresh();
     }
     if (value.writable) {
+      if (value.capabilities.reactions) {
+        options.push({
+          title: "React to issue",
+          run: () =>
+            reactionActions(props, value.reactions, (content, reacted) =>
+              mutate(() =>
+                request(props.client, WS_METHODS.issuesReact, { ...ref, content, reacted }),
+              ),
+            ),
+        });
+        if (value.comments.length)
+          options.push({
+            title: "React to a comment",
+            run: () =>
+              props.ui.choose(
+                "Issue comments",
+                value.comments.map((comment) => ({
+                  title: `${comment.author?.login ?? "Unknown"}: ${comment.body}`,
+                  description: comment.createdAt,
+                  run: () =>
+                    reactionActions(props, comment.reactions, (content, reacted) =>
+                      mutate(() =>
+                        request(props.client, WS_METHODS.issuesReact, {
+                          ...ref,
+                          subjectId: comment.id,
+                          content,
+                          reacted,
+                        }),
+                      ),
+                    ),
+                })),
+              ),
+          });
+      }
       if (value.capabilities.comment && value.viewerPermissions.comment)
         options.push({
           title: "Add comment",
@@ -524,6 +570,8 @@ export function IssuesPanel(props: FeatureProps) {
         });
     }
     if (value.commentsCursor) options.push({ title: "Load older comments", run: loadComments });
+    if (props.ui.openBrowser)
+      options.push({ title: "Open in browser", run: () => props.ui.openBrowser?.(value.url) });
     options.push({ title: "Show link", run: () => props.ui.text(value.displayKey, value.url) });
     props.ui.choose(`${value.displayKey} ${value.title}`, options);
   }

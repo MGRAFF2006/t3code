@@ -32,6 +32,7 @@ import { Action, destinationGuard, errorMessage, Section } from "./common.tsx";
 import { setPairingTokenOnUrl } from "@t3tools/shared/remote";
 import { usageSettingsActions } from "./usage-settings.ts";
 import { secretSettingsActions } from "./secrets.tsx";
+import { resourceActions } from "./resources.ts";
 
 const permissionLabels: Record<AuthEnvironmentScope, string> = {
   "orchestration:read": "Read projects and threads",
@@ -376,7 +377,7 @@ export function createSettingsExtras(
             };
             if (!capability?.serverSelfUpdate)
               throw new Error("This installation must be updated on its host.");
-            await request(props.client, WS_METHODS.serverUpdateServer, input);
+            await props.client.updateServer(input);
             props.ui.notify(
               `Update to ${release.version} requested. Reconnect after the server restarts.`,
             );
@@ -560,6 +561,7 @@ export function createSettingsExtras(
             ]
           : []),
         { title: "Process diagnostics", run: processActions },
+        { title: "CPU, memory and resource history", run: () => resourceActions(props) },
         {
           title: "Trace diagnostics",
           run: () =>

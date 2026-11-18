@@ -35,6 +35,7 @@ export interface FieldFormOptions {
 }
 export interface UiController {
   modal: Accessor<boolean>;
+  modalIdentity?: Accessor<object | null>;
   beforeNavigate(): Promise<boolean>;
   registerNavigationGuard(guard: () => string | null, discard?: () => void): () => void;
   notify(message: string, error?: boolean): void;
@@ -45,11 +46,12 @@ export interface UiController {
   text(title: string, content: string, language?: string): void;
   openTerminal?(terminalId?: string): void;
   openHtml?(html: string, title?: string): void;
+  openArtifact?(resource: AssetResource, label: string): void;
   previewImage?(resource: AssetResource, label: string): void;
   openBrowser?(url: string): void;
   openThread(id: string): void;
   openArea(area: Area): void;
-  openFile(path: string): void;
+  openFile(path: string, line?: number): void;
   showChanges(): void;
   chooseModel(): void;
   threadActions(): void;

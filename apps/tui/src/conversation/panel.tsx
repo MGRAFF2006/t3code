@@ -3,40 +3,90 @@ import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import {
   CommandId,
+  COMPOSER_CONTEXT_MAX_RECORDS,
   ORCHESTRATION_V2_WS_METHODS,
   WS_METHODS,
   type MentionContextRecord,
   type OrchestrationV2Command,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2PromptSuggestion,
+  type OrchestrationV2SearchThreadResult,
   type RuntimeMode,
+  type ModelSelection,
+  type OrchestrationMessageContext,
+  type ProjectId,
+  type ChatAttachment,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  isCompactionCommandMessage,
 } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
-import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import { resolveIdleCompaction } from "@t3tools/contracts/settings";
+import {
+  deriveThreadQueueWorkflowState,
+  threadSteersDuringCompaction,
+} from "@t3tools/client-runtime/state/thread-workflows";
+import { compactionBlocksSteering } from "@t3tools/client-runtime/state/composer-dispatch";
 import { derivePendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
 import {
   deriveLatestContextWindowSnapshot,
   latestProviderTurnTokenUsage,
+  compactBeforeSendTokens,
 } from "@t3tools/client-runtime/state/context-window";
-import { toKindScopedComposerContextId } from "@t3tools/shared/composerContextReferences";
+import {
+  collectComposerContextReferences,
+  formatComposerContextReference,
+  toKindScopedComposerContextId,
+} from "@t3tools/shared/composerContextReferences";
+import { workspacePreparationRetryRunIds } from "@t3tools/client-runtime/state/turn-item-presentation";
 import type { Choice, FeatureProps } from "../ui/controller.ts";
-import { request } from "../rpc/request.ts";
+import { request, subscribe } from "../rpc/request.ts";
 import { theme } from "../theme/index.ts";
 import { Transcript, turnItemText } from "../transcript.tsx";
+import { messageLinkActions } from "../presentation/links.ts";
 import { answerSecretRequest } from "../management/secrets.tsx";
 import { copyTerminalText } from "../presentation/terminal.ts";
-import { resolveFileMentions } from "./context.ts";
+import { selectableModels } from "../presentation/models.ts";
+import { referencedDraftContext, resolveFileMentions } from "./context.ts";
 import { attachmentActions } from "./attachments.ts";
-import type { LocalAttachment } from "../runtime/attachments.ts";
 import { RequestCards } from "./requests.tsx";
+import {
+  hasDraftContent,
+  promptSuggestionForLatestRun,
+  settleSentDraft,
+  type Draft,
+} from "./draft.ts";
+import { draftStore } from "./draft-storage.ts";
+import { contextActions } from "./context-actions.ts";
+import { planActions } from "./plan.ts";
+import { createFanoutTargets, startFanoutTargets, type FanoutTarget } from "./fanout.ts";
 
-interface Draft {
-  text: string;
-  mentions: ReadonlyArray<MentionContextRecord>;
-  attachments: ReadonlyArray<LocalAttachment>;
-}
 const drafts = new Map<string, Draft>();
 const pendingSends = new Set<string>();
+const dismissedSuggestions = new Set<string>();
+const skippedCompactions = new Set<string>();
+interface FanoutAttempt {
+  readonly projectId: ProjectId;
+  readonly draft: Draft;
+  readonly text: string;
+  readonly context?: OrchestrationMessageContext;
+  readonly targets: ReadonlyArray<FanoutTarget>;
+  readonly baseRef: string;
+  readonly startFromOrigin: boolean;
+  readonly runtimeMode: RuntimeMode;
+}
+const fanoutAttempts = new Map<string, FanoutAttempt>();
+const queuedAttachmentEdits = new Map<
+  string,
+  {
+    retained: ReadonlyArray<ChatAttachment>;
+    local: ReadonlyArray<import("../runtime/attachments.ts").LocalAttachment>;
+  }
+>();
+const queuedAttachmentSends = new Set<string>();
 const draftOwners = new Map<string, { apply: (draft: Draft) => void; settled: () => void }>();
 const runtimeLabels: Record<RuntimeMode, string> = {
   "approval-required": "Ask before changes",
@@ -53,10 +103,23 @@ function ThreadConversation(
   const environmentId = props.state()?.environmentId;
   const destinationThreadId = props.projection().thread.id;
   let disposed = false;
-  const initialDraft = drafts.get(props.scope) ?? { text: "", mentions: [], attachments: [] };
+  const persistence = draftStore(props.client.localStateDirectory, (message) =>
+    props.ui.notify(message, true),
+  );
+  const initialDraft = drafts.get(props.scope) ??
+    persistence.get(props.scope) ?? {
+      text: "",
+      mentions: [],
+      context: [],
+      attachments: [],
+      freshContext: false,
+    };
   const [draft, setDraft] = createSignal(initialDraft.text);
   const [mentions, setMentions] = createSignal(initialDraft.mentions);
+  const [context, setContext] = createSignal(initialDraft.context);
   const [attachments, setAttachments] = createSignal(initialDraft.attachments);
+  const [freshContext, setFreshContext] = createSignal(initialDraft.freshContext);
+  let lastComposerText = initialDraft.text;
   const [sending, setSending] = createSignal(pendingSends.has(props.scope));
   const [preferences, setPreferences] = createSignal(props.client.preferences());
   onCleanup(props.client.subscribePreferences(setPreferences));
@@ -64,12 +127,52 @@ function ThreadConversation(
   const [requestFocus, setRequestFocus] = createSignal(false);
   const [expandWork, setExpandWork] = createSignal(false);
   const [following, setFollowing] = createSignal(true);
+  const [compactionRevision, setCompactionRevision] = createSignal(0);
+  const [skipCompaction, setSkipCompaction] = createSignal(skippedCompactions.has(props.scope));
+  const [fanoutRevision, setFanoutRevision] = createSignal(0);
+  const [suggestion, setSuggestion] = createSignal<OrchestrationV2PromptSuggestion>(null);
+  const [dismissedSuggestion, setDismissedSuggestion] = createSignal<string | null>(null);
+  const [findQuery, setFindQuery] = createSignal("");
+  const [findResult, setFindResult] = createSignal<OrchestrationV2SearchThreadResult | null>(null);
+  const [finding, setFinding] = createSignal(false);
+  let findGeneration = 0;
+  const [retryingPreparation, setRetryingPreparation] = createSignal<ReadonlySet<string>>(
+    new Set(),
+  );
   let composer: TextareaRenderable | undefined;
   let history: ScrollBoxRenderable | undefined;
   const rows = new Map<string, Renderable>();
   const thread = () => props.projection().thread;
   const queue = createMemo(() => deriveThreadQueueWorkflowState(props.projection()));
+  const canSteer = createMemo(() => {
+    const active = queue().activeRun;
+    if (!active || freshContext()) return false;
+    const projection = props.projection();
+    const compactItems = projection.visibleTurnItems.filter(
+      ({ item }) => item.runId === active.id && item.type === "compaction",
+    );
+    const activeMessage = projection.messages.find(
+      (message) => message.id === active.userMessageId,
+    );
+    const compactCommandIsActive =
+      activeMessage !== undefined &&
+      isCompactionCommandMessage(activeMessage) &&
+      !compactItems.some(({ item }) => !["running", "pending", "waiting"].includes(item.status));
+    return (
+      queue().canPromoteToSteer &&
+      !compactionBlocksSteering({
+        compactCommandIsActive,
+        compactionRunning: compactItems.some(({ item }) => item.status === "running"),
+        steersDuringCompaction: threadSteersDuringCompaction(projection),
+        run: active,
+        messages: projection.messages,
+      })
+    );
+  });
   const pending = createMemo(() => derivePendingThreadRequests(props.projection()));
+  const retryablePreparation = createMemo(() => [
+    ...workspacePreparationRetryRunIds(props.projection().runs, props.projection().turnItems),
+  ]);
   const secretRequests = createMemo(() =>
     props
       .projection()
@@ -81,8 +184,61 @@ function ThreadConversation(
           : [],
       ),
   );
+  const linkRequests = createMemo(() =>
+    props
+      .projection()
+      .visibleTurnItems.flatMap((entry) =>
+        entry.visibility === "local" &&
+        entry.item.type === "link_request" &&
+        entry.item.linkStatus === "pending"
+          ? [entry.item]
+          : [],
+      ),
+  );
   const pendingCount = () =>
-    pending().approvals.length + pending().userInputs.length + secretRequests().length;
+    pending().approvals.length +
+    pending().userInputs.length +
+    secretRequests().length +
+    linkRequests().length;
+  createEffect(() => {
+    if (
+      props.state()?.config?.settings.promptSuggestionsEnabled !== true ||
+      props.state()?.environmentId !== environmentId
+    )
+      return;
+    const stop = subscribe(
+      props.client,
+      ORCHESTRATION_V2_WS_METHODS.subscribePromptSuggestion,
+      { threadId: destinationThreadId },
+      setSuggestion,
+    );
+    onCleanup(stop);
+  });
+  const offeredSuggestion = createMemo(() => {
+    const latestRunId = props
+      .state()
+      ?.shell?.threads.find((value) => value.id === destinationThreadId)?.latestRunId;
+    const value = promptSuggestionForLatestRun(suggestion(), latestRunId, props.projection().runs);
+    const key = value ? `${props.scope}/${value.runId}` : null;
+    return value &&
+      key !== dismissedSuggestion() &&
+      !dismissedSuggestions.has(key!) &&
+      !draft().trim() &&
+      attachments().length === 0 &&
+      !freshContext() &&
+      !queue().activeRun
+      ? value
+      : null;
+  });
+  const dismissSuggestion = () => {
+    const value = offeredSuggestion();
+    if (!value) return;
+    const key = `${props.scope}/${value.runId}`;
+    dismissedSuggestions.add(key);
+    if (dismissedSuggestions.size > 500)
+      dismissedSuggestions.delete(dismissedSuggestions.values().next().value!);
+    setDismissedSuggestion(key);
+  };
   createEffect(() => {
     if (pendingCount() === 0) setRequestFocus(false);
   });
@@ -106,28 +262,92 @@ function ThreadConversation(
       providerThread,
     );
   });
-  const saveDraft = () =>
-    drafts.set(props.scope, {
-      text: composer && !composer.isDestroyed ? composer.plainText : draft(),
-      mentions: mentions(),
-      attachments: attachments(),
+  createEffect(() => {
+    compactionRevision();
+    const config = props.state()?.config;
+    if (
+      !config ||
+      queue().activeRun ||
+      resolveIdleCompaction(config.settings, thread().modelSelection.instanceId) === "off"
+    )
+      return;
+    const timer = Effect.runFork(
+      Effect.sleep("1 minute").pipe(
+        Effect.andThen(Effect.sync(() => setCompactionRevision((value) => value + 1))),
+      ),
+    );
+    onCleanup(() => {
+      Effect.runFork(Fiber.interrupt(timer));
     });
+  });
+  const compactTokens = createMemo(() => {
+    compactionRevision();
+    const config = props.state()?.config;
+    if (!config || freshContext() || skipCompaction()) return null;
+    return compactBeforeSendTokens({
+      projection: props.projection(),
+      visibleTurnItems: props.projection().visibleTurnItems,
+      selection: thread().modelSelection,
+      providers: config.providers,
+      settings: config.settings,
+      text: draft(),
+      threadIdle: !queue().activeRun,
+      now: DateTime.formatIso(DateTime.nowUnsafe()),
+    });
+  });
+  const captureDraft = (): Draft => ({
+    text: composer && !composer.isDestroyed ? composer.plainText : draft(),
+    mentions: mentions(),
+    context: context(),
+    attachments: attachments(),
+    freshContext: freshContext(),
+  });
+  const saveDraft = () => {
+    const value = captureDraft();
+    drafts.set(props.scope, value);
+    persistence.save(props.scope, value);
+  };
   const setText = (value: string) => {
+    lastComposerText = value;
     composer?.setText(value);
     setDraft(value);
-    drafts.set(props.scope, { text: value, mentions: mentions(), attachments: attachments() });
+    const next = {
+      text: value,
+      mentions: mentions(),
+      context: context(),
+      attachments: attachments(),
+      freshContext: freshContext(),
+    };
+    drafts.set(props.scope, next);
+    persistence.save(props.scope, next);
   };
   const owner = {
     apply: (value: Draft) => {
       setMentions(value.mentions);
+      setContext(value.context);
       setAttachments(value.attachments);
+      setFreshContext(value.freshContext);
       setText(value.text);
     },
     settled: () => setSending(false),
   };
   draftOwners.set(props.scope, owner);
+  void persistence.ready
+    .then(() => {
+      const recovered = persistence.get(props.scope);
+      if (!disposed && !drafts.has(props.scope) && recovered) owner.apply(recovered);
+    })
+    .catch(() => undefined);
   onCleanup(() => {
-    saveDraft();
+    if (drafts.has(props.scope) || hasDraftContent(captureDraft())) saveDraft();
+    void persistence
+      .flush()
+      .catch((error: unknown) =>
+        props.ui.notify(
+          error instanceof Error ? error.message : "Could not save the conversation draft.",
+          true,
+        ),
+      );
     disposed = true;
     if (draftOwners.get(props.scope) === owner) draftOwners.delete(props.scope);
   });
@@ -155,6 +375,241 @@ function ThreadConversation(
         props.state()?.thread?.thread.id === destinationThreadId,
     );
   }
+  function addContext() {
+    contextActions(
+      props,
+      (record) => {
+        const text = composer?.plainText ?? draft();
+        const active = referencedDraftContext(text, context());
+        if (active.length + mentions().length >= COMPOSER_CONTEXT_MAX_RECORDS)
+          throw new Error("Remove some message context before adding more.");
+        setContext([...active.filter((value) => value.contextId !== record.contextId), record]);
+        if (
+          !collectComposerContextReferences(text).some(
+            (value) => value.contextId === record.contextId,
+          )
+        )
+          setText(
+            `${text}${text && !/\s$/.test(text) ? " " : ""}${formatComposerContextReference(record)} `,
+          );
+        else saveDraft();
+      },
+      () =>
+        !disposed &&
+        !sending() &&
+        props.state()?.environmentId === environmentId &&
+        props.state()?.thread?.thread.id === destinationThreadId,
+    );
+  }
+  function contextMenu() {
+    props.ui.choose("Message context", [
+      { title: "Add context…", run: addContext },
+      ...referencedDraftContext(composer?.plainText ?? draft(), context()).map((record) => ({
+        title: `Remove ${record.label}`,
+        description: record.kind,
+        run: () => {
+          let text = composer?.plainText ?? draft();
+          for (const reference of collectComposerContextReferences(text).toReversed())
+            if (reference.contextId === record.contextId)
+              text = text.slice(0, reference.start) + text.slice(reference.end);
+          setContext((values) => values.filter((value) => value.contextId !== record.contextId));
+          setText(text);
+        },
+      })),
+    ]);
+  }
+  const findEntry = (entryId: string) =>
+    props
+      .projection()
+      .visibleTurnItems.find(
+        (entry) =>
+          entry.sourceItemId === entryId ||
+          entry.item.id === entryId ||
+          ((entry.item.type === "user_message" || entry.item.type === "assistant_message") &&
+            entry.item.messageId === entryId),
+      );
+  async function findInThread(query: string, index = 0) {
+    const generation = ++findGeneration;
+    const current = () =>
+      !disposed &&
+      findGeneration === generation &&
+      props.state()?.environmentId === environmentId &&
+      props.state()?.thread?.thread.id === destinationThreadId;
+    if (!current()) throw new Error("Return to this conversation to search it.");
+    const value = query.trim();
+    if (!value || value.length > 200)
+      throw new Error("Enter a search phrase of at most 200 characters.");
+    setFindQuery(value);
+    setFindResult(null);
+    setFinding(true);
+    try {
+      const result = await request(props.client, ORCHESTRATION_V2_WS_METHODS.searchThread, {
+        threadId: destinationThreadId,
+        query: value,
+        index,
+      });
+      if (!current()) return;
+      setFindResult(result);
+      const match = result.match;
+      if (!match) return;
+      setFollowing(false);
+      if (!findEntry(match.entryId)) {
+        const loaded = await props.client.loadEarlier(match.entryId);
+        if (loaded._tag === "error") throw new Error(loaded.message);
+      }
+      if (!current()) return;
+      const entry = findEntry(match.entryId);
+      if (!entry)
+        throw new Error("This match is not available in the loaded conversation history.");
+      const box = history;
+      box?.afterLayout(() => {
+        const node = rows.get(`${entry.sourceThreadId}/${entry.sourceItemId}`);
+        if (current() && box && !box.isDestroyed && node && !node.isDestroyed)
+          box.scrollChildIntoView(node, { align: "nearest", inset: 1 });
+      });
+    } finally {
+      if (current()) setFinding(false);
+    }
+  }
+  function findPrompt() {
+    props.ui.form({
+      title: "Find in conversation",
+      fields: [{ name: "query", label: "Words or phrase", value: findQuery(), required: true }],
+      submitLabel: "Find",
+      onSubmit: async ({ query = "" }) => findInThread(query),
+    });
+  }
+  function stepFind(delta: number) {
+    const current = findResult();
+    if (!current?.totalMatches || finding()) return;
+    const index = (current.activeIndex + delta + current.totalMatches) % current.totalMatches;
+    void props.ui.run(() => findInThread(findQuery(), index));
+  }
+  function closeFind() {
+    findGeneration += 1;
+    setFindResult(null);
+    setFinding(false);
+  }
+  function savedPrompts() {
+    const guard = () => {
+      if (
+        disposed ||
+        props.state()?.environmentId !== environmentId ||
+        props.state()?.thread?.thread.id !== destinationThreadId
+      )
+        throw new Error("Return to the original conversation to change its draft.");
+    };
+    void props.ui.run(async () => {
+      await persistence.refresh();
+      guard();
+      props.ui.choose("Saved prompts", [
+        {
+          title: "Save current prompt…",
+          description: "Keep this draft aside, including its local attachments and context.",
+          run: () => {
+            guard();
+            if (sending()) {
+              props.ui.notify("Wait until the current message finishes sending.");
+              return;
+            }
+            const captured = captureDraft();
+            if (!hasDraftContent(captured)) {
+              props.ui.notify("Write a prompt or attach a file first.");
+              return;
+            }
+            drafts.set(props.scope, captured);
+            props.ui.form({
+              title: "Save prompt",
+              fields: [
+                {
+                  name: "label",
+                  label: "Name",
+                  value: captured.text.trim().split("\n")[0]?.slice(0, 120) || "Saved prompt",
+                  required: true,
+                },
+              ],
+              submitLabel: "Save aside",
+              onSubmit: async ({ label = "" }) => {
+                guard();
+                persistence.stashDraft({
+                  id: SecureRandom.uuidV4Unsafe(),
+                  scope: props.scope,
+                  label: label.trim().slice(0, 200),
+                  draft: captured,
+                });
+                await persistence.flush();
+                if (!disposed && drafts.get(props.scope) === captured)
+                  owner.apply({
+                    text: "",
+                    mentions: [],
+                    context: [],
+                    attachments: [],
+                    freshContext: false,
+                  });
+                props.ui.notify("Prompt saved. Restore it from /stash.");
+              },
+            });
+          },
+        },
+        ...persistence.stash().map((entry) => ({
+          title: entry.label,
+          description:
+            entry.scope === props.scope
+              ? "Saved in this conversation"
+              : "Saved in another conversation; copy text only",
+          run: () =>
+            props.ui.choose(entry.label, [
+              {
+                title: "Copy into composer",
+                run: () => {
+                  const restore = async () => {
+                    guard();
+                    if (sending())
+                      throw new Error("Wait until the current message finishes sending.");
+                    owner.apply(
+                      entry.scope === props.scope
+                        ? entry.draft
+                        : {
+                            text: entry.draft.text,
+                            mentions: [],
+                            context: [],
+                            attachments: [],
+                            freshContext: false,
+                          },
+                    );
+                    props.ui.notify(
+                      "Saved prompt copied. The saved copy is retained until you delete it.",
+                    );
+                  };
+                  if (hasDraftContent(captureDraft()))
+                    props.ui.confirm(
+                      "Replace current draft?",
+                      "The saved prompt replaces your current unsent draft.",
+                      restore,
+                      "Replace draft",
+                    );
+                  else void props.ui.run(restore);
+                },
+              },
+              {
+                title: "Delete saved prompt",
+                run: () =>
+                  props.ui.confirm(
+                    "Delete saved prompt?",
+                    entry.label,
+                    async () => {
+                      guard();
+                      persistence.removeStash(entry.id);
+                      await persistence.flush();
+                    },
+                    "Delete saved prompt",
+                  ),
+              },
+            ]),
+        })),
+      ]);
+    });
+  }
   const command = (value: OrchestrationV2Command) => {
     if (props.state()?.environmentId !== environmentId)
       return Promise.reject(new Error("Return to this thread's environment to continue."));
@@ -171,7 +626,7 @@ function ThreadConversation(
       return;
     }
     props.onFocus();
-    if (pending().approvals.length + pending().userInputs.length === 0) {
+    if (pending().approvals.length + pending().userInputs.length + linkRequests().length === 0) {
       props.ui.choose(
         "Provide a requested secret",
         secretRequests().map((item) => ({
@@ -204,6 +659,19 @@ function ThreadConversation(
   const loadEarlier = () => {
     void props.ui.run(earlier);
   };
+  const loadWork = async (entry: OrchestrationV2ProjectedTurnItem) => {
+    if (disposed || props.state()?.environmentId !== environmentId)
+      throw new Error("Return to the original conversation to load its work.");
+    const box = history;
+    const row = rows.get(`${entry.sourceThreadId}/${entry.sourceItemId}`);
+    const release = box && row && !row.isDestroyed ? box.anchor(row) : undefined;
+    try {
+      await props.client.loadWork(entry);
+    } finally {
+      if (box && !box.isDestroyed) box.afterLayout(() => release?.());
+      else release?.();
+    }
+  };
   const openItem = (entry: OrchestrationV2ProjectedTurnItem) => {
     const sourceThreadId = entry.sourceThreadId;
     const itemId = entry.sourceItemId;
@@ -213,10 +681,23 @@ function ThreadConversation(
         itemId,
       });
       const value = result.item ?? entry.item;
+      if (value.type === "proposed_plan") {
+        if (disposed) return;
+        planActions(
+          props,
+          value.markdown,
+          () => {
+            const result = copyTerminalText(renderer, value.markdown);
+            props.ui.notify(result.message, !result.attempted);
+          },
+          () => !disposed && props.state()?.environmentId === environmentId,
+        );
+        return;
+      }
       props.ui.text(
         value.title ?? value.type.replaceAll("_", " "),
         turnItemText(value),
-        value.type === "proposed_plan" || value.type === "assistant_message"
+        value.type === "assistant_message"
           ? "markdown"
           : value.type === "file_change"
             ? "diff"
@@ -230,6 +711,11 @@ function ThreadConversation(
         title: expandWork() ? "Collapse all details" : "Expand all details",
         run: () => setExpandWork((value) => !value),
       },
+      ...retryablePreparation().map((runId) => ({
+        title: "Retry workspace setup",
+        description: `Failed turn ${runId}`,
+        run: () => retryPreparation(runId),
+      })),
       ...props
         .projection()
         .visibleTurnItems.filter(
@@ -275,6 +761,18 @@ function ThreadConversation(
     void props.ui.run(() =>
       command({ type: "thread.interaction-mode.set", commandId: id(), threadId, interactionMode }),
     );
+  }
+  function retryPreparation(runId: OrchestrationV2ThreadProjection["runs"][number]["id"]) {
+    if (retryingPreparation().has(runId)) return;
+    const threadId = destinationThreadId;
+    setRetryingPreparation((values) => new Set([...values, runId]));
+    void props.ui.run(async () => {
+      try {
+        await command({ type: "prepared-run.retry", commandId: id(), threadId, runId });
+      } finally {
+        setRetryingPreparation((values) => new Set([...values].filter((value) => value !== runId)));
+      }
+    });
   }
   function options() {
     const selection = thread().modelSelection;
@@ -359,6 +857,7 @@ function ThreadConversation(
         description: `${queued.attachments.length > 0 ? `${queued.attachments.length} attachments · ` : ""}Edit, steer, reorder or remove this message`,
         run: () => {
           const actions: Choice[] = [
+            { title: "Manage attachments…", run: () => queuedAttachments(queued) },
             {
               title: "Edit message",
               run: () =>
@@ -390,7 +889,9 @@ function ThreadConversation(
           if (current.canPromoteToSteer && current.activeRun) {
             const targetRunId = current.activeRun.id;
             actions.push({
-              title: "Steer the current turn",
+              title: current.promoteSkipsCompaction
+                ? "Skip compaction and send this message"
+                : "Steer the current turn",
               run: () => {
                 void props.ui.run(() =>
                   command({
@@ -452,6 +953,108 @@ function ThreadConversation(
     }
     props.ui.choose(current.isHeld ? "Queue paused" : "Queued messages", choices);
   }
+  function queuedAttachments(
+    queued: ReturnType<typeof deriveThreadQueueWorkflowState>["queuedRuns"][number],
+  ) {
+    const key = `${props.scope}/${queued.run.id}`;
+    const guard = () => {
+      if (
+        disposed ||
+        props.state()?.environmentId !== environmentId ||
+        props.state()?.thread?.thread.id !== destinationThreadId
+      )
+        throw new Error("Return to the original conversation to edit its queued attachments.");
+      if (queuedAttachmentSends.has(key))
+        throw new Error("Wait for this queued message's attachment changes to finish.");
+    };
+    let edit = queuedAttachmentEdits.get(key) ?? { retained: queued.attachments, local: [] };
+    const show = () =>
+      props.ui.choose("Queued message attachments", [
+        {
+          title: "Apply attachment changes",
+          description: `${edit.retained.length} retained · ${edit.local.length} new local files`,
+          run: () =>
+            void props.ui.run(async () => {
+              guard();
+              if (!queued.text.trim() && edit.retained.length + edit.local.length === 0)
+                throw new Error("Keep some text or an attachment in the queued message.");
+              queuedAttachmentSends.add(key);
+              try {
+                await props.client.editQueuedMessage(
+                  destinationThreadId,
+                  queued.run.id,
+                  queued.text,
+                  edit.retained,
+                  edit.local,
+                  queued.context,
+                );
+                queuedAttachmentEdits.delete(key);
+                props.ui.notify("Queued message attachments updated.");
+              } finally {
+                queuedAttachmentSends.delete(key);
+              }
+            }),
+        },
+        {
+          title: "Add or remove local files…",
+          run: () =>
+            attachmentActions(
+              props,
+              edit.local,
+              (next) => {
+                guard();
+                if (edit.retained.length + next.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS)
+                  throw new Error(
+                    `Keep at most ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} attachments in this message.`,
+                  );
+                if (environmentId)
+                  props.client.releaseLocalAttachments(
+                    environmentId,
+                    edit.local.filter((value) => !next.some((kept) => kept.id === value.id)),
+                  );
+                edit = { ...edit, local: next };
+                queuedAttachmentEdits.set(key, edit);
+                props.ui.notify(
+                  "Attachment changes are ready. Reopen this queued message's attachments and apply them.",
+                );
+              },
+              () =>
+                !disposed &&
+                props.state()?.environmentId === environmentId &&
+                props.state()?.thread?.thread.id === destinationThreadId &&
+                !queuedAttachmentSends.has(key),
+            ),
+        },
+        ...edit.retained.map((attachment) => ({
+          title: `Remove ${attachment.name}`,
+          run: () => {
+            guard();
+            edit = {
+              ...edit,
+              retained: edit.retained.filter((value) => value.id !== attachment.id),
+            };
+            queuedAttachmentEdits.set(key, edit);
+            show();
+          },
+        })),
+        ...(edit.retained.length + edit.local.length
+          ? [
+              {
+                title: "Remove all attachments",
+                run: () => {
+                  guard();
+                  if (environmentId)
+                    props.client.releaseLocalAttachments(environmentId, edit.local);
+                  edit = { retained: [], local: [] };
+                  queuedAttachmentEdits.set(key, edit);
+                  show();
+                },
+              },
+            ]
+          : []),
+      ]);
+    show();
+  }
   function mention(query = "") {
     const directory = cwd();
     if (!directory) return;
@@ -508,6 +1111,24 @@ function ThreadConversation(
     });
   }
   const slashChoices = (): Choice[] => [
+    {
+      title: "/links",
+      description: "Open file and browser links from a message",
+      run: () =>
+        props.ui.choose(
+          "Choose a message",
+          props
+            .projection()
+            .visibleTurnItems.filter(
+              (entry) =>
+                entry.item.type === "user_message" || entry.item.type === "assistant_message",
+            )
+            .map((entry) => ({
+              title: turnItemText(entry.item).slice(0, 100),
+              run: () => messageLinkActions(props, entry),
+            })),
+        ),
+    },
     { title: "/model", description: "Choose provider and model", run: props.ui.chooseModel },
     { title: "/plan", description: "Toggle plan mode", run: togglePlan },
     { title: "/permissions", description: "Change agent permissions", run: permissions },
@@ -520,8 +1141,44 @@ function ThreadConversation(
     { title: "/diff", description: "Review workspace changes", run: props.ui.showChanges },
     { title: "/queue", description: "Manage queued messages", run: queueActions },
     { title: "/work", description: "Inspect the work log", run: workLog },
+    { title: "/find", description: "Find text in this conversation", run: findPrompt },
     { title: "/attach", description: "Attach a local image or file", run: attach },
+    {
+      title: "/stash",
+      description: "Save this draft aside or restore a saved prompt",
+      run: savedPrompts,
+    },
     { title: "/mention", description: "Add file context from the workspace", run: () => mention() },
+    {
+      title: "/context",
+      description: "Add response, thread, environment, terminal or review context",
+      run: contextMenu,
+    },
+    ...(props.state()?.config?.environment.capabilities.freshContext
+      ? [
+          {
+            title: "/clear",
+            description: "Start a fresh session with your next message",
+            run: () => {
+              setFreshContext(true);
+              saveDraft();
+            },
+          },
+        ]
+      : []),
+    ...((workspaceProvider()?.slashCommands ?? provider()?.slashCommands ?? []).some(
+      (value) => value.name.replace(/^\//, "") === "compact",
+    )
+      ? [
+          {
+            title: "/compact",
+            description: "Compact this provider's context",
+            run: () => {
+              void props.ui.run(() => props.client.send("/compact"));
+            },
+          },
+        ]
+      : []),
     {
       title: "/stop",
       description: "Interrupt the current turn",
@@ -529,12 +1186,14 @@ function ThreadConversation(
         void props.ui.run(() => props.client.interrupt());
       },
     },
-    ...(workspaceProvider()?.slashCommands ?? provider()?.slashCommands ?? []).map((value) => ({
-      title: `/${value.name.replace(/^\//, "")}`,
-      description: value.description ?? "Provider command",
-      category: "Provider commands",
-      run: () => setText(`/${value.name.replace(/^\//, "")} `),
-    })),
+    ...(workspaceProvider()?.slashCommands ?? provider()?.slashCommands ?? [])
+      .filter((value) => value.name.replace(/^\//, "") !== "compact")
+      .map((value) => ({
+        title: `/${value.name.replace(/^\//, "")}`,
+        description: value.description ?? "Provider command",
+        category: "Provider commands",
+        run: () => setText(`/${value.name.replace(/^\//, "")} `),
+      })),
     ...(workspaceProvider()?.skills ?? provider()?.skills ?? [])
       .filter((value) => value.enabled && value.userInvocable !== false)
       .map((value) => ({
@@ -548,50 +1207,70 @@ function ThreadConversation(
     const prefix = (composer?.plainText ?? draft()).trim();
     props.ui.choose(
       "Message commands",
-      slashChoices().filter((value) =>
-        value.title.startsWith(prefix.startsWith("/") ? prefix : "/"),
-      ),
+      slashChoices()
+        .filter((value) => value.title.startsWith(prefix.startsWith("/") ? prefix : "/"))
+        .map((value) => ({
+          ...value,
+          run: () => {
+            if (!value.category) setText("");
+            value.run();
+          },
+        })),
     );
   }
   async function send(delivery?: "queue" | "steer" | "restart") {
     const text = composer?.plainText ?? draft();
     if ((!text.trim() && attachments().length === 0) || sending()) return;
+    if (delivery === "steer" && !canSteer())
+      throw new Error("This turn cannot take steering input. Queue the message instead.");
     const local = slashChoices().find((value) => value.title === text.trim() && !value.category);
-    if (local) {
+    if (local && (local.title !== "/clear" || attachments().length === 0)) {
       setText("");
       local.run();
       return;
     }
     const scope = props.scope;
     const { text: outgoingText, records } = resolveFileMentions(text, mentions());
-    const captured = { text, mentions: mentions(), attachments: attachments() };
+    const captured = {
+      text,
+      mentions: mentions(),
+      context: context(),
+      attachments: attachments(),
+      freshContext: freshContext(),
+    };
     pendingSends.add(scope);
     setSending(true);
     try {
       await props.client.send(outgoingText, {
+        ...(captured.freshContext ? { freshContext: true } : {}),
+        ...(compactTokens() !== null && !captured.freshContext ? { compactBeforeSend: true } : {}),
         ...(delivery
           ? { dispatchMode: delivery }
           : queue().activeRun
             ? {
                 dispatchMode:
-                  preferences().followUpMode === "steer" && queue().canPromoteToSteer
+                  preferences().followUpMode === "steer" && canSteer()
                     ? ("steer" as const)
                     : ("queue" as const),
               }
             : {}),
         ...(captured.attachments.length > 0 ? { localAttachments: captured.attachments } : {}),
-        ...(records.length > 0 ? { context: { version: 1 as const, records } } : {}),
+        ...(records.length > 0 || captured.context.length > 0
+          ? {
+              context: {
+                version: 1 as const,
+                records: [...records, ...referencedDraftContext(outgoingText, captured.context)],
+              },
+            }
+          : {}),
       });
       const current = drafts.get(scope) ?? captured;
       const unchanged = current.text === captured.text;
-      const next: Draft = {
-        text: unchanged ? "" : current.text,
-        mentions: unchanged ? [] : current.mentions,
-        attachments: current.attachments.filter(
-          (value) => !captured.attachments.some((sent) => sent.id === value.id),
-        ),
-      };
+      const next = settleSentDraft(current, captured);
       drafts.set(scope, next);
+      persistence.save(scope, next);
+      skippedCompactions.delete(scope);
+      setSkipCompaction(false);
       draftOwners.get(scope)?.apply(next);
       if (!disposed && unchanged) goBottom();
     } finally {
@@ -599,7 +1278,172 @@ function ThreadConversation(
       draftOwners.get(scope)?.settled();
     }
   }
+  function fanoutResults(attempt: FanoutAttempt) {
+    props.ui.choose(
+      "Multi-model conversations",
+      attempt.targets.map((target) => ({
+        title: target.selection.model,
+        description:
+          target.status === "started"
+            ? "Started · Open conversation"
+            : (target.error ?? "Starting…"),
+        run: () => {
+          if (target.status === "started") props.ui.openThread(target.threadId);
+          else
+            props.ui.text(
+              target.selection.model,
+              target.error ?? "This conversation has not started.",
+            );
+        },
+      })),
+    );
+  }
+  async function launchFanout(attempt: FanoutAttempt) {
+    if (
+      disposed ||
+      props.state()?.environmentId !== environmentId ||
+      props.state()?.thread?.thread.id !== destinationThreadId
+    )
+      throw new Error("Return to the original conversation to send to multiple models.");
+    if (sending()) return;
+    const scope = props.scope;
+    pendingSends.add(scope);
+    setSending(true);
+    try {
+      await startFanoutTargets(
+        attempt.targets,
+        async (target) => {
+          if (props.state()?.environmentId !== environmentId)
+            throw new Error("The environment changed before this model was started.");
+          return props.client.createThread(
+            attempt.projectId,
+            attempt.text.trim().split("\n")[0]?.slice(0, 120) || "New conversation",
+            attempt.text,
+            {
+              modelSelection: target.selection,
+              runtimeMode: attempt.runtimeMode,
+              threadId: target.threadId,
+              commandId: target.commandId,
+              messageId: target.messageId,
+              workspaceStrategy: {
+                type: "worktree",
+                baseRef: attempt.baseRef,
+                startFromOrigin: attempt.startFromOrigin,
+              },
+              ...(attempt.context ? { context: attempt.context } : {}),
+              ...(attempt.draft.attachments.length
+                ? { localAttachments: attempt.draft.attachments }
+                : {}),
+            },
+          );
+        },
+        () => {
+          if (!disposed) setFanoutRevision((value) => value + 1);
+        },
+      );
+      const failed = attempt.targets.filter((target) => target.status !== "started").length;
+      if (!failed) {
+        const next = settleSentDraft(drafts.get(scope) ?? attempt.draft, attempt.draft);
+        drafts.set(scope, next);
+        persistence.save(scope, next);
+        draftOwners.get(scope)?.apply(next);
+      }
+      props.ui.notify(
+        `${attempt.targets.length - failed} conversations started${failed ? `; ${failed} failed. Draft retained; use F2 to retry failed models.` : "."}`,
+        failed > 0,
+      );
+      if (
+        !disposed &&
+        props.state()?.environmentId === environmentId &&
+        props.state()?.thread?.thread.id === destinationThreadId
+      )
+        fanoutResults(attempt);
+    } finally {
+      pendingSends.delete(scope);
+      draftOwners.get(scope)?.settled();
+    }
+  }
+  function chooseFanoutModels() {
+    if (sending()) {
+      props.ui.notify("Wait for the current message to finish sending.");
+      return;
+    }
+    const selected = new Map<string, ModelSelection>();
+    const initial = thread().modelSelection;
+    const selectionKey = (selection: ModelSelection) =>
+      `${selection.instanceId}/${selection.model}`;
+    selected.set(selectionKey(initial), initial);
+    const show = () =>
+      props.ui.choose("Send to multiple models", [
+        {
+          title: `Start ${selected.size} separate conversation${selected.size === 1 ? "" : "s"}`,
+          description: "Each model receives this prompt in its own worktree.",
+          run: () => {
+            const captured = captureDraft();
+            if (!captured.text.trim() && !captured.attachments.length) {
+              props.ui.notify("Write a prompt or attach a file first.");
+              return;
+            }
+            if (!selected.size) {
+              props.ui.notify("Choose at least one model.");
+              return;
+            }
+            const currentProject = project();
+            if (!currentProject) {
+              props.ui.notify("Select a project before sending to multiple models.", true);
+              return;
+            }
+            const resolved = resolveFileMentions(captured.text, captured.mentions);
+            const records = [
+              ...resolved.records,
+              ...referencedDraftContext(resolved.text, captured.context),
+            ];
+            const attempt: FanoutAttempt = {
+              projectId: currentProject.id,
+              draft: captured,
+              text: resolved.text,
+              targets: createFanoutTargets([...selected.values()]),
+              baseRef: thread().branch ?? "HEAD",
+              startFromOrigin: props.state()?.config?.settings.newWorktreesStartFromOrigin ?? true,
+              runtimeMode: thread().runtimeMode,
+              ...(records.length ? { context: { version: 1, records } } : {}),
+            };
+            props.ui.confirm(
+              "Send to multiple models?",
+              `Start ${selected.size} separate conversations, each in its own worktree. This sends a real agent turn to every selected model.`,
+              async () => {
+                fanoutAttempts.set(props.scope, attempt);
+                await launchFanout(attempt);
+              },
+              "Start conversations",
+            );
+          },
+        },
+        ...selectableModels(
+          props.state()?.config?.providers ?? [],
+          props.state()?.config?.settings,
+          initial,
+        ).map(({ provider: instance, model, favorite }) => {
+          const selection: ModelSelection = {
+            instanceId: instance.instanceId,
+            model: model.slug,
+          };
+          const key = selectionKey(selection);
+          return {
+            title: `${selected.has(key) ? "✓ " : ""}${favorite ? "★ " : ""}${model.name}`,
+            category: instance.displayName ?? instance.driver,
+            run: () => {
+              if (selected.has(key)) selected.delete(key);
+              else selected.set(key, selection);
+              show();
+            },
+          };
+        }),
+      ]);
+    show();
+  }
   function deliveryMenu() {
+    fanoutRevision();
     const choices: Choice[] = [
       {
         title: queue().activeRun ? "Queue after current turn" : "Send message",
@@ -607,8 +1451,27 @@ function ThreadConversation(
           void props.ui.run(() => send(queue().activeRun ? "queue" : undefined));
         },
       },
+      {
+        title: "Send to multiple models…",
+        description: "Start separate conversations and worktrees",
+        run: chooseFanoutModels,
+      },
     ];
-    if (queue().canPromoteToSteer)
+    const attempt = fanoutAttempts.get(props.scope);
+    if (attempt) {
+      if (attempt.targets.some((target) => target.status !== "started"))
+        choices.push({
+          title: "Retry failed model launches",
+          description:
+            "Only failed selections are retried, using their original submission identities.",
+          run: () => void props.ui.run(() => launchFanout(attempt)),
+        });
+      choices.push({
+        title: "Multi-model conversation results",
+        run: () => fanoutResults(attempt),
+      });
+    }
+    if (canSteer())
       choices.push({
         title: "Steer current turn",
         description: "Send this message while the agent is working",
@@ -628,6 +1491,31 @@ function ThreadConversation(
   }
   useKeyboard((key) => {
     if (!props.focused || props.ui.modal()) return;
+    if (!requestFocus() && key.ctrl && key.name === "f") {
+      key.preventDefault();
+      findPrompt();
+    }
+    if (!requestFocus() && key.ctrl && key.name === "g" && findResult()) {
+      key.preventDefault();
+      stepFind(key.shift ? -1 : 1);
+    }
+    if (!requestFocus() && key.name === "escape" && findResult()) {
+      key.preventDefault();
+      closeFind();
+      return;
+    }
+    if (!requestFocus() && key.name === "escape" && offeredSuggestion()) {
+      key.preventDefault();
+      dismissSuggestion();
+    }
+    if (!requestFocus() && key.name === "tab" && !key.shift && offeredSuggestion()) {
+      key.preventDefault();
+      key.stopPropagation();
+      const value = offeredSuggestion()!;
+      dismissSuggestion();
+      setText(value.text);
+      return;
+    }
     if (key.name === "pageup" || key.name === "pagedown") {
       key.preventDefault();
       history?.scrollBy(key.name === "pageup" ? -1 : 1, "viewport");
@@ -687,6 +1575,10 @@ function ThreadConversation(
       key.preventDefault();
       attach();
     }
+    if (!requestFocus() && key.name === "f4") {
+      key.preventDefault();
+      savedPrompts();
+    }
     if (!requestFocus() && key.shift && key.name === "tab") {
       key.preventDefault();
       togglePlan();
@@ -706,6 +1598,25 @@ function ThreadConversation(
   });
   return (
     <box flexGrow={1} minHeight={0} onMouseDown={props.onFocus}>
+      <Show when={findQuery() && (findResult() || finding())}>
+        <box height={1} paddingX={1} flexDirection="row" gap={2}>
+          <text
+            fg={theme.textMuted}
+            flexGrow={1}
+            truncate
+            onMouseDown={findPrompt}
+          >{`Find: ${findQuery()} · ${finding() ? "Searching…" : findResult()?.totalMatches ? `${findResult()!.activeIndex + 1}/${findResult()!.totalMatches}` : "No matches"}`}</text>
+          <text fg={theme.primary} onMouseDown={() => stepFind(-1)}>
+            Previous
+          </text>
+          <text fg={theme.primary} onMouseDown={() => stepFind(1)}>
+            Next ^G
+          </text>
+          <text fg={theme.textMuted} onMouseDown={closeFind}>
+            Close
+          </text>
+        </box>
+      </Show>
       <scrollbox
         ref={(node) => {
           history = node;
@@ -757,11 +1668,32 @@ function ThreadConversation(
           </box>
         </Show>
         <Transcript
+          cwd={cwd()}
+          onOpenLinks={(entry) => messageLinkActions(props, entry)}
           projection={props.projection()}
           hidePendingRequests
           wordWrap={preferences().wordWrap}
           expandAll={expandWork()}
+          highlightedEntryId={findResult()?.match?.entryId}
           onOpenItem={openItem}
+          onLoadWork={loadWork}
+          onCommandOutput={
+            props.state()?.config?.environment.capabilities.commandOutputStreaming
+              ? (entry, onFrame, onError) => {
+                  if (disposed || props.state()?.environmentId !== environmentId) {
+                    onError(new Error("Return to the command's environment to view its output."));
+                    return () => {};
+                  }
+                  return subscribe(
+                    props.client,
+                    ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput,
+                    { threadId: entry.sourceThreadId, itemId: entry.sourceItemId },
+                    onFrame,
+                    onError,
+                  );
+                }
+              : undefined
+          }
           onOpenThread={props.ui.openThread}
           onSecretRequest={(item) => answerSecretRequest(props, item)}
           onCopyItem={(entry) => {
@@ -818,6 +1750,58 @@ function ThreadConversation(
             )}
           </For>
         </box>
+      </Show>
+      <For each={retryablePreparation()}>
+        {(runId) => (
+          <text fg={theme.warning} paddingX={1} onMouseDown={() => retryPreparation(runId)}>
+            {retryingPreparation().has(runId)
+              ? "Retrying workspace setup…"
+              : "Workspace setup failed · Retry setup"}
+          </text>
+        )}
+      </For>
+      <Show when={freshContext()}>
+        <text
+          fg={theme.primary}
+          paddingX={1}
+          onMouseDown={() => {
+            setFreshContext(false);
+            saveDraft();
+          }}
+        >
+          Next message starts a fresh session · Undo
+        </text>
+      </Show>
+      <Show when={compactTokens()}>
+        {(tokens) => (
+          <text
+            fg={theme.textMuted}
+            paddingX={1}
+            truncate
+            onMouseDown={() => {
+              skippedCompactions.add(props.scope);
+              setSkipCompaction(true);
+            }}
+          >
+            {`When you return: compact ${tokens().toLocaleString()} tokens before sending · Skip once`}
+          </text>
+        )}
+      </Show>
+      <Show when={offeredSuggestion()}>
+        {(value) => (
+          <text
+            fg={theme.textMuted}
+            paddingX={1}
+            height={1}
+            truncate
+            onMouseDown={() => {
+              dismissSuggestion();
+              setText(value().text);
+            }}
+          >
+            {`Suggestion: ${value().text} · Tab to use · Esc dismiss`}
+          </text>
+        )}
       </Show>
       <box flexDirection="row" paddingX={1} height={1}>
         <text
@@ -880,6 +1864,14 @@ function ThreadConversation(
             · F3 manage
           </text>
         </Show>
+        <Show when={referencedDraftContext(draft(), context()).length > 0}>
+          <text fg={theme.textMuted} truncate onMouseDown={contextMenu}>
+            {referencedDraftContext(draft(), context())
+              .map((record) => record.label)
+              .join(" · ")}{" "}
+            · Manage context
+          </text>
+        </Show>
         <textarea
           ref={(node) => {
             composer = node;
@@ -903,6 +1895,8 @@ function ThreadConversation(
           cursorColor={theme.primary}
           onContentChange={() => {
             if (!composer || composer.isDestroyed) return;
+            if (composer.plainText === lastComposerText) return;
+            lastComposerText = composer.plainText;
             setDraft(composer.plainText);
             saveDraft();
           }}
@@ -939,6 +1933,14 @@ function ThreadConversation(
             {" "}
             Attach{" "}
           </text>
+          <text fg={theme.textMuted} onMouseDown={contextMenu}>
+            {" "}
+            Context{" "}
+          </text>
+          <text fg={theme.textMuted} onMouseDown={savedPrompts}>
+            {" "}
+            Saved{" "}
+          </text>
           <text fg={theme.textMuted} flexGrow={1} truncate onMouseDown={permissions}>
             {runtimeLabels[thread().runtimeMode]}
           </text>
@@ -955,19 +1957,21 @@ function ThreadConversation(
             {sending()
               ? "Sending…"
               : queue().activeRun
-                ? preferences().followUpMode === "steer" && queue().canPromoteToSteer
+                ? preferences().followUpMode === "steer" && canSteer()
                   ? "Steer"
                   : "Queue"
-                : preferences().sendShortcut === "ctrl-s"
-                  ? "Send ^S"
-                  : "Send ↵"}
+                : compactTokens() !== null
+                  ? "Compact and send"
+                  : preferences().sendShortcut === "ctrl-s"
+                    ? "Send ^S"
+                    : "Send ↵"}
           </text>
         </box>
       </box>
       <text height={1} fg={theme.textMuted} paddingX={1} truncate>
         {requestFocus()
           ? "↑↓ choose · space select · enter activate · esc compose"
-          : `${preferences().sendShortcut === "ctrl-s" ? "Enter newline · Ctrl+S send" : "Alt+Enter newline"} · F2 delivery · F3 attach · / Tab commands`}
+          : `${preferences().sendShortcut === "ctrl-s" ? "Enter newline · Ctrl+S send" : "Alt+Enter newline"} · F2 delivery · F3 attach · F4 saved · / Tab commands`}
       </text>
     </box>
   );

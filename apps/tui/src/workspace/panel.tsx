@@ -8,20 +8,25 @@ import { BrowserPanel } from "../presentation/browser-panel.tsx";
 import { ChangesPanel } from "./changes.tsx";
 import { FilesPanel } from "./files.tsx";
 import { GitPanel } from "./git.tsx";
+import { DevicesPanel } from "./devices.tsx";
+import { TerminalsPanel } from "./terminals.tsx";
 import { reduceStatus, workspaceRoot, type WorkspaceStatus } from "./logic.ts";
 
-export type WorkspaceTab = "changes" | "files" | "git" | "browser";
+export type WorkspaceTab = "changes" | "files" | "git" | "browser" | "terminals" | "devices";
 const tabs = [
   { id: "changes", title: "Changes" },
   { id: "files", title: "Files" },
   { id: "git", title: "Git" },
   { id: "browser", title: "Browser" },
+  { id: "terminals", title: "Terminals" },
+  { id: "devices", title: "Devices" },
 ] as const;
 
 export function WorkspacePanel(
   props: FeatureProps & {
     initialTab?: WorkspaceTab | undefined;
     openPath?: string | undefined;
+    openLine?: number | undefined;
     compact?: boolean | undefined;
   },
 ) {
@@ -109,19 +114,36 @@ export function WorkspacePanel(
         flexShrink={0}
         backgroundColor={theme.backgroundPanel}
       >
-        <For each={tabs}>
-          {(entry) => (
+        <Show
+          when={!props.compact}
+          fallback={
             <text
-              fg={tab() === entry.id ? theme.primary : theme.textMuted}
-              onMouseDown={() => {
-                props.onFocus();
-                setTab(entry.id);
-              }}
+              fg={theme.primary}
+              onMouseDown={() =>
+                props.ui.choose(
+                  "Workspace view",
+                  tabs.map((entry) => ({ title: entry.title, run: () => setTab(entry.id) })),
+                )
+              }
             >
-              {entry.title}
+              {tabs.find((entry) => entry.id === tab())?.title} ▾
             </text>
-          )}
-        </For>
+          }
+        >
+          <For each={tabs}>
+            {(entry) => (
+              <text
+                fg={tab() === entry.id ? theme.primary : theme.textMuted}
+                onMouseDown={() => {
+                  props.onFocus();
+                  setTab(entry.id);
+                }}
+              >
+                {entry.title}
+              </text>
+            )}
+          </For>
+        </Show>
         <text fg={theme.textMuted} flexGrow={1} truncate>
           {status().local?.refName ?? ""}
         </text>
@@ -161,6 +183,15 @@ export function WorkspacePanel(
         refresh={refresh}
         visible={tab() === "git"}
       />
+      <TerminalsPanel
+        {...props}
+        cwd={cwd}
+        status={status}
+        mutation={mutation}
+        refresh={refresh}
+        visible={tab() === "terminals"}
+      />
+      <DevicesPanel {...props} visible={tab() === "devices"} />
     </box>
   );
 }

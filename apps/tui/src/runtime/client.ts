@@ -11,6 +11,7 @@ import {
   connectionRoutes,
   routeHttpBaseUrl,
   EnvironmentRegistry,
+  EnvironmentSupervisor,
   PrimaryConnectionRegistration,
   PrimaryConnectionTarget,
   RelayConnectionRegistration,
@@ -31,6 +32,9 @@ import {
   createEnvironmentThreadStateAtoms,
   createEnvironmentThreadDetailAtoms,
   createThreadEnvironmentAtoms,
+  createThreadFamilyAtoms,
+  createOlderSettledThreadAtoms,
+  unloadedOlderSettledCount,
 } from "@t3tools/client-runtime/state/threads";
 import { createEnvironmentSessionAtoms } from "@t3tools/client-runtime/state/session";
 import { createServerEnvironmentAtoms } from "@t3tools/client-runtime/state/server";
@@ -42,20 +46,30 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import {
   EnvironmentId,
+  GuestMessageId,
   MessageId,
   ORCHESTRATION_V2_WS_METHODS,
   ProjectId,
   RuntimeRequestId,
+  RunId,
+  NodeId,
   ThreadId,
   WS_METHODS,
   type DesktopSshEnvironmentTarget,
   type ModelSelection,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ProjectedTurnItem,
   type AssetResource,
   type PullRequestDiffInput,
   type ProviderApprovalDecision,
   type ProviderUserInputAnswers,
+  type ChatAttachment,
+  type CommandId,
+  type ServerSelfUpdateInput,
+  type RuntimeMode,
+  type OrchestrationMessageContext,
+  UserInputAttachments,
   type ServerConfig,
   type ProjectReadFileResult,
   type VcsStatusResult,
@@ -76,6 +90,7 @@ import * as Effect from "effect/Effect";
 import type * as Layer from "effect/Layer";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { Atom, AtomRegistry } from "effect/reactivity";
 import type { CloudAuthorizationPrompt } from "../connections/cloud.ts";
@@ -85,14 +100,29 @@ import { createAuthEnvironmentAtoms } from "@t3tools/client-runtime/state/auth";
 import { createLocalAttachmentUploads, type LocalAttachment } from "./attachments.ts";
 import { createPreferences } from "./preferences.ts";
 import { readAsset } from "./assets.ts";
+import { resolveDeviceHubAccess } from "@t3tools/client-runtime/state/deviceHubAccess";
+import { PREVIEW_STREAM_BASE_PATH } from "@t3tools/client-runtime/preview/server-browser-stream";
 import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import { services } from "../rpc/catalog.ts";
+const decodeQuestionAttachments = Schema.decodeUnknownSync(UserInputAttachments);
 
 export interface TuiConnectionOptions {
   readonly url?: string;
   readonly pairingUrl?: string;
   readonly token?: string;
   readonly configDir?: string;
+}
+
+export interface ThreadLaunchOptions {
+  readonly modelSelection?: ModelSelection;
+  readonly context?: OrchestrationMessageContext;
+  readonly attachments?: ReadonlyArray<ChatAttachment>;
+  readonly localAttachments?: ReadonlyArray<LocalAttachment>;
+  readonly threadId?: ThreadId;
+  readonly commandId?: CommandId;
+  readonly messageId?: MessageId;
+  readonly workspaceStrategy?: OrchestrationV2ThreadLaunchWorkspaceStrategy;
+  readonly runtimeMode?: RuntimeMode;
 }
 
 export interface TuiSnapshot {
@@ -102,6 +132,11 @@ export interface TuiSnapshot {
   readonly error: string | null;
   readonly config: ServerConfig | null;
   readonly shell: OrchestrationV2ShellSnapshot | null;
+  readonly olderSettled?: {
+    readonly remaining: number;
+    readonly loading: boolean;
+    readonly error: string | null;
+  };
   readonly selectedThreadId: ThreadId | null;
   readonly thread: OrchestrationV2ThreadProjection | null;
   readonly hasMoreHistory: boolean;
@@ -191,9 +226,9 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
   const shellAtoms = createEnvironmentShellAtoms(runtime);
   const threadAtoms = createEnvironmentThreadStateAtoms(runtime);
   const threadDetails = createEnvironmentThreadDetailAtoms(threadAtoms.stateAtom);
-  const shellSnapshot = Atom.family((environmentId: EnvironmentId) =>
-    Atom.make((get) => Option.getOrNull(get(shellAtoms.stateValueAtom(environmentId)).snapshot)),
-  );
+  const families = createThreadFamilyAtoms(runtime, shellAtoms.stateAtom);
+  const olderSettled = createOlderSettledThreadAtoms(runtime, shellAtoms.stateAtom);
+  const shellSnapshot = families.snapshotAtom;
   const threadCommands = createThreadEnvironmentAtoms(runtime, shellSnapshot);
   const sessions = createEnvironmentSessionAtoms(runtime);
   const localUploads = createLocalAttachmentUploads(runtime, registry);
@@ -341,6 +376,9 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
     if (environmentId === null) throw new Error("Connect to an environment first.");
     return environmentId;
   };
+  let loadOlderSettled: () => void = () => {
+    throw new Error("Connect to an environment first.");
+  };
   const observeEnvironment = () => {
     if (environmentId === null) return;
     const currentEnvironmentId = environmentId;
@@ -359,12 +397,57 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
         });
       else if (result._tag === "Failure") update({ error: Cause.pretty(result.cause) });
     });
-    observe(shellAtoms.stateValueAtom(currentEnvironmentId), (state) =>
-      update({
-        shell: Option.getOrNull(state.snapshot),
-        ...(Option.isSome(state.error) ? { error: state.error.value } : {}),
-      }),
-    );
+    observe(shellAtoms.stateValueAtom(currentEnvironmentId), (state) => {
+      if (Option.isSome(state.error)) update({ error: state.error.value });
+    });
+    observe(shellSnapshot(currentEnvironmentId), (shell) => update({ shell }));
+    const scope = { environmentId: currentEnvironmentId, projectIds: null };
+    let pageCount = 0;
+    let releasePages: (() => void) | undefined;
+    const mountPages = () => {
+      const pages = pageCount;
+      const releaseRows = families.mountRows(
+        registry,
+        currentEnvironmentId,
+        olderSettled.rowsKey(scope, pages),
+        olderSettled.pageRowsAtom(scope, pages),
+      );
+      const status = Atom.make((get) => {
+        const shelf = get(olderSettled.pagesAtom(scope, pages));
+        const older = get(olderSettled.olderSettledAtom(currentEnvironmentId));
+        const shell = get(shellSnapshot(currentEnvironmentId));
+        return {
+          remaining: unloadedOlderSettledCount({
+            scopes: [scope],
+            olderSettled: () => older,
+            threads: (shell?.threads ?? []).map((source) => ({
+              environmentId: currentEnvironmentId,
+              source,
+            })),
+          }),
+          loading: shelf.status === "pending",
+          error:
+            shelf.status === "failed" ? "Could not load earlier settled threads. Retry." : null,
+        };
+      });
+      const stop = observe(status, (olderSettled) => update({ olderSettled }));
+      const previous = releasePages;
+      releasePages = () => {
+        stop();
+        releaseRows();
+      };
+      previous?.();
+    };
+    mountPages();
+    stops.add(() => releasePages?.());
+    loadOlderSettled = () => {
+      if (snapshot.olderSettled?.loading) return;
+      if (snapshot.olderSettled?.error) olderSettled.retryPages(registry, scope, pageCount);
+      else {
+        pageCount += 1;
+        mountPages();
+      }
+    };
     observe(server.configValueAtom(currentEnvironmentId), (config) =>
       update({ config, ...(config ? { label: config.environment.label } : {}) }),
     );
@@ -515,9 +598,18 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
     observeEnvironment();
   };
   const client = {
+    localStateDirectory: configDir,
     services,
     setPasswordPrompt: passwords.setHandler,
     cloudIdentity: () => run(cloud.identity()),
+    updateServer: async (input: ServerSelfUpdateInput) => {
+      const result = await server.updateServer.run(registry, {
+        environmentId: requireEnvironment(),
+        input,
+      });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      return result.value;
+    },
     login: async (showPrompt: (prompt: CloudAuthorizationPrompt) => void) => {
       await run(cloud.login((prompt) => Effect.sync(() => showPrompt(prompt))));
       await run(
@@ -676,8 +768,58 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
         (atom, listener) => observe(atom, listener, transportStops),
       );
     },
+    captureTransportFor: async (id: string) => {
+      const destination = EnvironmentId.make(id);
+      await run(
+        EnvironmentRegistry.EnvironmentRegistry.pipe(
+          Effect.flatMap((environments) => SubscriptionRef.get(environments.entries)),
+          Effect.flatMap((entries) =>
+            entries.has(destination)
+              ? Effect.void
+              : Effect.fail(
+                  new ConnectionBlockedError({
+                    reason: "configuration",
+                    detail: "Pair this environment before using it for authentication.",
+                  }),
+                ),
+          ),
+        ),
+      );
+      return createRpcBridge(
+        runtime,
+        registry,
+        () => destination,
+        (atom, listener) => observe(atom, listener, transportStops),
+      );
+    },
+    previewStreamAccess: async () => {
+      const destination = requireEnvironment();
+      return run(
+        EnvironmentRegistry.EnvironmentRegistry.pipe(
+          Effect.flatMap((environments) =>
+            environments.run(
+              destination,
+              Effect.gen(function* () {
+                const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+                const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+                if (Option.isNone(prepared))
+                  return yield* new ConnectionBlockedError({
+                    reason: "configuration",
+                    detail: "Connect to the browser's environment first.",
+                  });
+                return yield* resolveDeviceHubAccess({
+                  prepared: prepared.value,
+                  hubBasePath: PREVIEW_STREAM_BASE_PATH,
+                });
+              }),
+            ),
+          ),
+        ),
+      );
+    },
     invoke,
     stream,
+    loadOlderSettled: async () => loadOlderSettled(),
     createProject: async (workspaceRoot: string, title = NodePath.basename(workspaceRoot)) => {
       const destination = requireEnvironment();
       const invokeAtDestination = createRpcBridge(
@@ -696,10 +838,23 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
       });
       return projectId;
     },
-    createThread: async (projectId: string, title = "New thread", message?: string) => {
+    createThread: async (
+      projectId: string,
+      title = "New thread",
+      message?: string,
+      options?: ThreadLaunchOptions,
+    ) => {
       const destination = requireEnvironment();
       const id = ProjectId.make(projectId);
-      const modelSelection = requireNewThreadModel(id);
+      const modelSelection = options?.modelSelection ?? requireNewThreadModel(id);
+      const locals = [...(options?.localAttachments ?? [])];
+      const attachments = [...(options?.attachments ?? [])];
+      const context = options?.context;
+      const targetThreadId = options?.threadId;
+      const launchCommandId = options?.commandId;
+      const messageId = options?.messageId;
+      const requestedWorkspace = options?.workspaceStrategy;
+      const requestedRuntime = options?.runtimeMode;
       const config = snapshot.config;
       const project = snapshot.shell?.projects.find((value) => value.id === id);
       const projectHasThreads =
@@ -728,8 +883,10 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
       const resolved = config
         ? resolveProjectSettings(config.settings, id, project, projectFile)
         : null;
-      let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy = { type: "root" };
-      if (resolved && project) {
+      let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy = requestedWorkspace ?? {
+        type: "root",
+      };
+      if (resolved && project && requestedWorkspace === undefined) {
         const mode = resolveNewThreadEnvMode({
           projectSettings: resolved,
           workspaceRoot: project.workspaceRoot,
@@ -746,18 +903,29 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
             workspaceStrategy = { type: "worktree", baseRef: status.refName ?? "HEAD" };
         }
       }
+      const uploaded = locals.length ? await run(localUploads.prepare(destination, locals)) : [];
       const result = await invokeAtDestination(ORCHESTRATION_V2_WS_METHODS.launchThread, {
-        commandId: await uuid(),
+        commandId: launchCommandId ?? (await uuid()),
+        ...(targetThreadId ? { threadId: targetThreadId } : {}),
         projectId: id,
         title,
         modelSelection,
-        runtimeMode: resolved?.settings.defaultRuntimeMode ?? "approval-required",
+        runtimeMode:
+          requestedRuntime ?? resolved?.settings.defaultRuntimeMode ?? "approval-required",
         interactionMode: "default",
         workspaceStrategy,
-        ...(message
-          ? { initialMessage: { messageId: await uuid(), text: message, attachments: [] } }
+        ...(message !== undefined
+          ? {
+              initialMessage: {
+                messageId: messageId ?? (await uuid()),
+                text: message,
+                attachments: [...attachments, ...uploaded],
+                ...(context ? { context } : {}),
+              },
+            }
           : {}),
       });
+      localUploads.complete(destination, locals);
       const launched = result as { readonly threadId: string };
       return launched.threadId;
     },
@@ -768,6 +936,8 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
         context?: StartThreadTurnInput["message"]["context"];
         attachments?: StartThreadTurnInput["message"]["attachments"];
         localAttachments?: ReadonlyArray<LocalAttachment>;
+        freshContext?: boolean;
+        compactBeforeSend?: boolean;
       },
     ) => {
       const destination = requireEnvironment();
@@ -779,9 +949,32 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
       const locals = [...(options?.localAttachments ?? [])];
       const attachments = [...(options?.attachments ?? [])];
       const context = options?.context;
-      const dispatchMode = options?.dispatchMode;
+      let dispatchMode = options?.dispatchMode;
+      const freshContext = options?.freshContext;
+      const compactBeforeSend = options?.compactBeforeSend;
       const messageId = MessageId.make(await uuid());
       const uploaded = locals.length ? await run(localUploads.prepare(destination, locals)) : [];
+      if (compactBeforeSend && !freshContext) {
+        const compacted = await threadCommands.startTurn.run(registry, {
+          environmentId: destination,
+          input: {
+            threadId,
+            message: {
+              messageId: MessageId.make(await uuid()),
+              role: "user",
+              text: "/compact",
+              attachments: [],
+              idleCompaction: "onReturn",
+            },
+            dispatchMode: "queue",
+            modelSelection,
+            runtimeMode,
+            interactionMode: "default",
+          },
+        });
+        if (compacted._tag === "Failure") throw squashAtomCommandFailure(compacted);
+        dispatchMode = "queue";
+      }
       const result = await threadCommands.startTurn.run(registry, {
         environmentId: destination,
         input: {
@@ -794,6 +987,7 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
             ...(context ? { context } : {}),
           },
           ...(dispatchMode ? { dispatchMode } : {}),
+          ...(freshContext ? { freshContext } : {}),
           modelSelection,
           runtimeMode,
           interactionMode,
@@ -806,6 +1000,13 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
       const result = await threadCommands.interruptTurn.run(registry, {
         environmentId: requireEnvironment(),
         input: { threadId: requireThread() },
+      });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+    },
+    stopSubagent: async (threadId: string, subagentId: string) => {
+      const result = await threadCommands.interruptTurn.run(registry, {
+        environmentId: requireEnvironment(),
+        input: { threadId: ThreadId.make(threadId), subagentId: NodeId.make(subagentId) },
       });
       if (result._tag === "Failure") throw squashAtomCommandFailure(result);
     },
@@ -833,20 +1034,112 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
       });
       if (result._tag === "Failure") throw squashAtomCommandFailure(result);
     },
-    answer: async (requestId: string, answers: ProviderUserInputAnswers) => {
+    answer: async (
+      requestId: string,
+      answers: ProviderUserInputAnswers,
+      localAttachmentsByQuestionId?: Readonly<Record<string, ReadonlyArray<LocalAttachment>>>,
+    ) => {
+      const destination = requireEnvironment();
+      const threadId = requireThread();
+      const capturedAnswers = { ...answers };
+      const locals = Object.entries(localAttachmentsByQuestionId ?? {}).map(
+        ([question, values]) => [question, [...values]] as const,
+      );
+      const uploaded = await Promise.all(
+        locals.map(
+          async ([question, values]) =>
+            [question, await run(localUploads.prepare(destination, values))] as const,
+        ),
+      );
+      const attachmentsByQuestionId = decodeQuestionAttachments(Object.fromEntries(uploaded));
       const result = await threadCommands.respondToUserInput.run(registry, {
+        environmentId: destination,
+        input: {
+          threadId,
+          requestId: RuntimeRequestId.make(requestId),
+          answers: capturedAnswers,
+          ...(locals.length ? { attachmentsByQuestionId } : {}),
+        },
+      });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      for (const [, values] of locals) localUploads.complete(destination, values);
+    },
+    resolveGuestMessage: async (
+      threadId: string,
+      guestMessageId: string,
+      decision: "send" | "dismiss",
+    ) => {
+      const result = await threadCommands.resolveGuestMessage.run(registry, {
         environmentId: requireEnvironment(),
-        input: { threadId: requireThread(), requestId: RuntimeRequestId.make(requestId), answers },
+        input: {
+          threadId: ThreadId.make(threadId),
+          guestMessageId: GuestMessageId.make(guestMessageId),
+          decision,
+        },
       });
       if (result._tag === "Failure") throw squashAtomCommandFailure(result);
     },
-    loadEarlier: async () => {
+    editQueuedMessage: async (
+      threadId: string,
+      runId: string,
+      text: string,
+      retained: ReadonlyArray<ChatAttachment>,
+      localAttachments: ReadonlyArray<LocalAttachment>,
+      context?: OrchestrationMessageContext,
+    ) => {
+      const destination = requireEnvironment();
+      const locals = [...localAttachments];
+      const attachments = [...retained];
+      const target = ThreadId.make(threadId);
+      const runIdAtStart = RunId.make(runId);
+      const messageId =
+        snapshot.thread?.thread.id === target
+          ? snapshot.thread.runs.find((entry) => entry.id === runIdAtStart)?.userMessageId
+          : undefined;
+      if (!messageId)
+        throw new Error("Return to the conversation containing this queued message to edit it.");
+      const uploaded = locals.length ? await run(localUploads.prepare(destination, locals)) : [];
+      const result = await threadCommands.editQueuedRun.run(registry, {
+        environmentId: destination,
+        input: {
+          threadId: target,
+          runId: runIdAtStart,
+          text,
+          edit: {
+            messageId,
+            attachments: [...attachments, ...uploaded],
+            ...(context ? { context } : {}),
+          },
+        },
+      });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      localUploads.complete(destination, locals);
+    },
+    loadEarlier: async (throughEntryId?: string) => {
       const result = await threadCommands.loadEarlierHistory.run(registry, {
         environmentId: requireEnvironment(),
-        input: { threadId: requireThread() },
+        input: { threadId: requireThread(), ...(throughEntryId ? { throughEntryId } : {}) },
       });
       if (result._tag === "Failure") throw squashAtomCommandFailure(result);
       return result.value;
+    },
+    loadWork: async (entry: OrchestrationV2ProjectedTurnItem) => {
+      const environmentId = requireEnvironment();
+      const threadId = requireThread();
+      if (
+        !snapshot.thread?.visibleTurnItems.some(
+          (value) =>
+            value.sourceThreadId === entry.sourceThreadId &&
+            value.sourceItemId === entry.sourceItemId,
+        )
+      )
+        throw new Error("Return to the thread containing this work to load it.");
+      const result = await threadCommands.loadEarlierHistory.run(registry, {
+        environmentId,
+        input: { threadId, workAnchorId: entry.sourceItemId },
+      });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      if (result.value._tag === "error") throw new Error(result.value.message);
     },
     close: () => {
       closed = true;

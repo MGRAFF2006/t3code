@@ -542,6 +542,31 @@ export function projectActions(props: FeatureProps, projectId: string) {
     },
     { title: "Publish repository", run: () => void props.ui.run(publish) },
     {
+      title: "Remove project from T3",
+      description: "Remove its saved threads; keep the workspace folder on disk.",
+      run: () =>
+        props.ui.confirm(
+          "Remove project from T3?",
+          "Removes this project's saved conversations and project record. The workspace folder and repository stay on disk.",
+          async () => {
+            if (!(await props.ui.beforeNavigate())) return;
+            guard();
+            await request(props.client, WS_METHODS.projectsMutate, {
+              type: "project.delete",
+              commandId: CommandId.make(SecureRandom.uuidV4Unsafe()),
+              projectId: id,
+              force: true,
+            });
+            if (
+              props.state()?.environmentId === destination &&
+              props.state()?.thread?.thread.projectId === id
+            )
+              props.client.selectThread(null);
+          },
+          "Remove project",
+        ),
+    },
+    {
       title: "Show workspace path",
       run: () => props.ui.text(current.title, current.workspaceRoot),
     },

@@ -13,6 +13,7 @@ import type { Choice, FeatureProps } from "../ui/controller.ts";
 import { request } from "../rpc/request.ts";
 import { theme } from "../theme/index.ts";
 import { PullRequestDiffPanel } from "./pr-diff.tsx";
+import { reactionActions } from "./reactions.ts";
 import { Action, createProjectScope, destinationGuard, errorMessage, Section } from "./common.tsx";
 
 const entryKey = (entry: PullRequestListEntry) =>
@@ -233,6 +234,205 @@ export function PullRequestsPanel(props: FeatureProps) {
       refresh();
     }
     const options: Choice[] = [];
+    if (value.capabilities.reactions)
+      options.push({
+        title: "React to pull request",
+        run: () =>
+          reactionActions(props, activity()?.reactions, (content, reacted) =>
+            mutate(() =>
+              request(props.client, WS_METHODS.pullRequestsSetReaction, {
+                ...ref,
+                content,
+                reacted,
+              }),
+            ),
+          ),
+      });
+    if (activity()?.comments.length)
+      options.push({
+        title: "Conversation comments",
+        run: () =>
+          props.ui.choose(
+            "Pull request comments",
+            activity()!.comments.map((comment) => ({
+              title: `${comment.author?.login ?? "Unknown"}: ${comment.body}`,
+              description: comment.createdAt,
+              run: () => {
+                const kind = comment.kind;
+                props.ui.choose("Comment actions", [
+                  {
+                    title: "Read comment",
+                    run: () => props.ui.text("Pull request comment", comment.body, "markdown"),
+                  },
+                  ...(value.capabilities.reactions
+                    ? [
+                        {
+                          title: "React to comment",
+                          run: () =>
+                            reactionActions(props, comment.reactions, (content, reacted) =>
+                              mutate(() =>
+                                request(props.client, WS_METHODS.pullRequestsSetReaction, {
+                                  ...ref,
+                                  subjectId: comment.id,
+                                  content,
+                                  reacted,
+                                }),
+                              ),
+                            ),
+                        },
+                      ]
+                    : []),
+                  ...(comment.canEdit && (kind === "issue-comment" || kind === "review-comment")
+                    ? [
+                        {
+                          title: "Edit your comment",
+                          run: () =>
+                            props.ui.form({
+                              title: "Edit pull request comment",
+                              fields: [
+                                {
+                                  name: "body",
+                                  label: "Comment",
+                                  type: "multiline",
+                                  value: comment.body,
+                                  required: true,
+                                },
+                              ],
+                              submitLabel: "Save comment",
+                              onSubmit: async ({ body = "" }) => {
+                                await mutate(() =>
+                                  request(props.client, WS_METHODS.pullRequestsUpdateComment, {
+                                    ...ref,
+                                    commentId: comment.id,
+                                    kind,
+                                    body,
+                                  }),
+                                );
+                              },
+                            }),
+                        },
+                      ]
+                    : []),
+                ]);
+              },
+            })),
+          ),
+      });
+    options.push(
+      {
+        title: "Review guide",
+        run: () =>
+          void props.ui.run(async () => {
+            guard();
+            const result = await request(props.client, WS_METHODS.pullRequestsReviewGuide, ref);
+            guard();
+            const guide = result.guide;
+            props.ui.choose("Review guide", [
+              ...(guide
+                ? [
+                    {
+                      title: "Read guide",
+                      description: `${guide.stops.length} stops${result.currentHeadSha !== guide.headSha ? " · Written for an older revision" : ""}`,
+                      run: () =>
+                        props.ui.text(
+                          "Review guide",
+                          guide.stops
+                            .map((stop, index) =>
+                              [
+                                `${index + 1}. ${stop.title}`,
+                                stop.summary,
+                                stop.attention
+                                  ? `${stop.attention.kind}: ${stop.attention.note}`
+                                  : "",
+                                ...stop.files.map(
+                                  (file) => `${file.path}${file.note ? `: ${file.note}` : ""}`,
+                                ),
+                                ...stop.excerpts.map(
+                                  (excerpt) =>
+                                    `${excerpt.path}:${excerpt.start}–${excerpt.end} (${excerpt.side}): ${excerpt.caption}`,
+                                ),
+                                ...stop.notes.map(
+                                  (note) =>
+                                    `${note.path}:${note.line} · ${note.title}\n${note.body}`,
+                                ),
+                                ...stop.questions.map((question) => `Question: ${question}`),
+                              ]
+                                .filter(Boolean)
+                                .join("\n\n"),
+                            )
+                            .join("\n\n---\n\n"),
+                          "markdown",
+                        ),
+                    },
+                  ]
+                : []),
+              {
+                title: result.run?._tag === "Running" ? "Generation in progress" : "Generate guide",
+                description:
+                  result.run?._tag === "Failed"
+                    ? result.run.detail
+                    : "Uses the environment's configured review-guide model.",
+                run: () => {
+                  if (result.run?._tag === "Running") {
+                    props.ui.notify("Guide generation is running. Reopen this action to refresh.");
+                    return;
+                  }
+                  props.ui.confirm(
+                    "Generate review guide",
+                    "Run the configured review-guide model for this pull request? This may use provider credits.",
+                    async () => {
+                      guard();
+                      await request(props.client, WS_METHODS.pullRequestsGenerateReviewGuide, ref);
+                      guard();
+                      props.ui.notify(
+                        "Guide generation requested. Reopen Review guide to inspect its progress.",
+                      );
+                    },
+                    "Generate guide",
+                  );
+                },
+              },
+            ]);
+          }),
+      },
+      {
+        title: "Stack layers",
+        run: () =>
+          void props.ui.run(async () => {
+            guard();
+            const stack = await request(props.client, WS_METHODS.pullRequestsStack, ref);
+            guard();
+            if (!stack) {
+              props.ui.notify("This pull request is not part of a stack.");
+              return;
+            }
+            props.ui.choose(
+              `Stack #${stack.number}`,
+              stack.layers.map((layer) => ({
+                title: `#${layer.number} ${layer.title ?? layer.headBranch}`,
+                description: `${layer.state}${layer.isDraft ? " · Draft" : ""}`,
+                run: () => {
+                  guard();
+                  setReview({ ...ref, number: layer.number });
+                },
+              })),
+            );
+          }),
+      },
+      {
+        title: "Source account and workspace",
+        run: () =>
+          void props.ui.run(async () => {
+            guard();
+            const routing = await request(props.client, WS_METHODS.pullRequestsRouting, ref);
+            guard();
+            props.ui.text(
+              "Pull request routing",
+              `${routing.host}\n${routing.provider} · ${routing.viewer}\n\n${routing.projectTitle}\n${routing.workspaceRoot}\n\nAccount: ${routing.accountId}`,
+            );
+          }),
+      },
+    );
     if (value.capabilities.diff)
       options.push({
         title: "Review changed files",
@@ -568,6 +768,8 @@ export function PullRequestsPanel(props: FeatureProps) {
           );
         }),
     });
+    if (props.ui.openBrowser)
+      options.push({ title: "Open in browser", run: () => props.ui.openBrowser?.(value.url) });
     options.push({ title: "Show link", run: () => props.ui.text("Pull request link", value.url) });
     props.ui.choose(`#${value.number} ${value.title}`, options);
   }

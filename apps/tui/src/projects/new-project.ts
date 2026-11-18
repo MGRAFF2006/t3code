@@ -114,7 +114,59 @@ export async function projectCloneStatus(props: FeatureProps) {
 
 export function newProjectActions(props: FeatureProps) {
   const guard = guardDestination(props);
+  async function browse(partialPath = "~/") {
+    guard();
+    const result = await request(props.client, WS_METHODS.filesystemBrowse, { partialPath });
+    guard();
+    props.ui.choose(result.parentPath, [
+      {
+        title: "Add this folder as a project",
+        description: result.parentPath,
+        run: () =>
+          props.ui.form({
+            title: "Open folder",
+            fields: [{ name: "name", label: "Project name (optional)" }],
+            submitLabel: "Add project",
+            onSubmit: async ({ name = "" }) => {
+              guard();
+              await props.client.createProject(result.parentPath, name.trim() || undefined);
+            },
+          }),
+      },
+      {
+        title: "Parent folder",
+        run: () => void props.ui.run(() => browse(`${result.parentPath}/../`)),
+      },
+      {
+        title: "Enter path…",
+        run: () =>
+          props.ui.form({
+            title: "Browse environment folders",
+            fields: [
+              {
+                name: "path",
+                label: "Directory or path prefix",
+                value: result.parentPath,
+                required: true,
+              },
+            ],
+            submitLabel: "Browse",
+            onSubmit: async ({ path = "~/" }) => browse(path),
+          }),
+      },
+      ...result.entries.map((entry) => ({
+        title: entry.name,
+        description: entry.fullPath,
+        run: () => void props.ui.run(() => browse(`${entry.fullPath}/`)),
+      })),
+    ]);
+  }
   props.ui.choose("Add project", [
+    {
+      title: "Browse environment folders",
+      description: "Choose a folder on this environment",
+      run: () => void props.ui.run(() => browse()),
+    },
     {
       title: "Open existing folder",
       description: "Add a workspace from the selected environment",

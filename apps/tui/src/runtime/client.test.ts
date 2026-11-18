@@ -145,6 +145,7 @@ describe("terminal client onboarding", () => {
     "preferred-new-thread",
     "configured-defaults",
     "send-switch",
+    "compact-send-switch",
   ] as const)("keeps model selection with the intended destination for %s", (scenario) =>
     Effect.acquireUseRelease(
       Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-tui-model-"))),
@@ -206,16 +207,17 @@ describe("terminal client onboarding", () => {
                 ),
             }));
           const shellFactory = ShellState.createEnvironmentShellAtoms;
+          const shellState = {
+            ...ShellState.EMPTY_SHELL_STATE,
+            snapshot: Option.some({ ...v2ShellSnapshot, projects: [projectA, projectB] }),
+            status: "live" as const,
+          };
           using _shell = vi
             .spyOn(ShellState, "createEnvironmentShellAtoms")
             .mockImplementation((runtime) => ({
               ...shellFactory(runtime),
-              stateValueAtom: () =>
-                Atom.make({
-                  ...ShellState.EMPTY_SHELL_STATE,
-                  snapshot: Option.some({ ...v2ShellSnapshot, projects: [projectA, projectB] }),
-                  status: "live" as const,
-                }),
+              stateValueAtom: () => Atom.make(shellState),
+              stateAtom: () => Atom.make(AsyncResult.success(shellState)),
             }));
           using _threads = vi
             .spyOn(ThreadState, "createEnvironmentThreadStateAtoms")
@@ -246,6 +248,7 @@ describe("terminal client onboarding", () => {
               };
             });
           let dispatched: StartThreadTurnInput | undefined;
+          const dispatches: StartThreadTurnInput[] = [];
           const commandsFactory = ThreadState.createThreadEnvironmentAtoms;
           using _commands = vi
             .spyOn(ThreadState, "createThreadEnvironmentAtoms")
@@ -257,6 +260,7 @@ describe("terminal client onboarding", () => {
                   ...original.startTurn,
                   run: async (_registry, target) => {
                     dispatched = target.input;
+                    dispatches.push(target.input);
                     return AsyncResult.success({ sequence: 1 });
                   },
                 },
@@ -277,7 +281,7 @@ describe("terminal client onboarding", () => {
           );
           yield* Effect.addFinalizer(() => Effect.sync(() => client.close()));
           client.selectThread(threadA.thread.id);
-          if (scenario !== "send-switch") {
+          if (!scenario.endsWith("send-switch")) {
             const explicitModel = { ...modelA, model: "explicit-model" };
             if (scenario === "preferred-new-thread") {
               client.selectThread(null);
@@ -305,16 +309,26 @@ describe("terminal client onboarding", () => {
               client.send("Message for A", {
                 dispatchMode: "queue",
                 context: { version: 1, records: [] },
+                freshContext: scenario === "send-switch",
+                compactBeforeSend: true,
               }),
             );
             expect(dispatched).toMatchObject({
               threadId: threadA.thread.id,
               dispatchMode: "queue",
+              ...(scenario === "send-switch" ? { freshContext: true } : {}),
               message: { text: "Message for A", context: { version: 1, records: [] } },
               modelSelection: modelA,
               runtimeMode: "approval-required",
               interactionMode: "default",
             });
+            expect(dispatches).toHaveLength(scenario === "send-switch" ? 1 : 2);
+            if (scenario === "compact-send-switch")
+              expect(dispatches[0]).toMatchObject({
+                threadId: threadA.thread.id,
+                message: { text: "/compact", idleCompaction: "onReturn", attachments: [] },
+                modelSelection: modelA,
+              });
           }
         }),
       (directory) => Effect.promise(() => NodeFSP.rm(directory, { recursive: true })),

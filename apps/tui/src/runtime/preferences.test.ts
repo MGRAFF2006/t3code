@@ -31,12 +31,13 @@ describe("terminal preferences", () => {
           yield* Effect.promise(() =>
             Promise.all([
               first.update({ wordWrap: false }),
-              first.update({ diffView: "split", followUpMode: "steer" }),
+              first.update({ diffView: "split", followUpMode: "steer", icons: "nerd" }),
             ]),
           );
           unsubscribe();
           const reopened = yield* Effect.promise(() => createPreferences(directory));
           expect(reopened.get()).toEqual({
+            icons: "nerd",
             theme: "light",
             sendShortcut: "ctrl-s",
             wordWrap: false,

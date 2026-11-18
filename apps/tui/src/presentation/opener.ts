@@ -27,10 +27,18 @@ export async function openBrowser(value: string): Promise<void> {
 export async function createHtmlPreview(
   html: string,
 ): Promise<{ url: string; dispose: () => Promise<void> }> {
-  const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-tui-html-"));
+  return createFilePreview(new TextEncoder().encode(html), "preview.html");
+}
+
+export async function createFilePreview(bytes: Uint8Array, label: string) {
+  const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-tui-artifact-"));
   try {
-    const path = NodePath.join(directory, "preview.html");
-    await NodeFSP.writeFile(path, html, { mode: 0o600, flag: "wx" });
+    const basename = NodePath.basename(label.replaceAll("\\", "/"))
+      .replace(/[^\p{L}\p{N}._ -]/gu, "_")
+      .slice(-120);
+    const filename = !basename || basename === "." || basename === ".." ? "artifact.bin" : basename;
+    const path = NodePath.join(directory, filename);
+    await NodeFSP.writeFile(path, bytes, { mode: 0o600, flag: "wx" });
     return {
       url: NodeURL.pathToFileURL(path).href,
       dispose: () => NodeFSP.rm(directory, { recursive: true, force: true }),

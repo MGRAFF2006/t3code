@@ -1,5 +1,5 @@
 import { pathToFiletype, type ScrollBoxRenderable } from "@opentui/core";
-import { useKeyboard, useRenderer } from "@opentui/solid";
+import { useRenderer } from "@opentui/solid";
 import {
   createEffect,
   createMemo,
@@ -13,10 +13,17 @@ import {
 import { WS_METHODS, type ProjectEntry, type ProjectReadFileResult } from "@t3tools/contracts";
 import { request } from "../rpc/request.ts";
 import { theme } from "../theme/index.ts";
+import { useActiveKeyboard } from "../ui/keyboard.ts";
 import { createSyntax } from "../theme/syntax.ts";
 import { FileEditor } from "./editor.tsx";
 import { basename, fileSaveProblem } from "./logic.ts";
+import { MarkdownMessage } from "../transcript.tsx";
 import type { WorkspaceContext } from "./types.ts";
+import { icon } from "../presentation/icons.ts";
+import { DelimitedPreview } from "./delimited.tsx";
+import { NotebookPreview } from "./notebook.tsx";
+import { hexPreview } from "./file-preview.logic.ts";
+import { openInEnvironmentEditor } from "../features/editor.ts";
 
 interface OpenFile {
   cwd: string;
@@ -30,6 +37,7 @@ export function FilesPanel(
   props: WorkspaceContext & {
     visible: boolean;
     openPath?: string | undefined;
+    openLine?: number | undefined;
     compact?: boolean | undefined;
   },
 ) {
@@ -45,6 +53,8 @@ export function FilesPanel(
   const [preview, setPreview] = createSignal(false);
   const [reading, setReading] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
+  const [formattedPreview, setFormattedPreview] = createSignal(false);
+  const [notebookImages, setNotebookImages] = createSignal(false);
   const environment = createMemo(() => props.state()?.environmentId ?? null);
   const connection = createMemo(() => props.state()?.connection);
   let readVersion = 0;
@@ -133,6 +143,8 @@ export function FilesPanel(
       )
         return;
       setOpened({ cwd, environmentId, file, draft: file.contents, editing: false });
+      setFormattedPreview(/\.(md|markdown|csv|tsv|ipynb)$/i.test(path));
+      setNotebookImages(false);
       if (reveal) {
         setPreview(true);
         codeScroll?.scrollTo(Math.max(0, line - 1));
@@ -157,9 +169,9 @@ export function FilesPanel(
 
   createEffect(
     on(
-      () => [props.openPath, props.cwd(), environment()] as const,
-      ([path]) => {
-        if (path) openFile(path);
+      () => [props.openPath, props.cwd(), environment(), props.openLine] as const,
+      ([path, , , line]) => {
+        if (path) openFile(path, line ?? 1);
       },
     ),
   );
@@ -266,26 +278,55 @@ export function FilesPanel(
   function search(contents = false) {
     props.ui.form({
       title: contents ? "Search in files" : "Find file",
-      fields: [{ name: "query", label: contents ? "Text" : "File name or path", required: true }],
+      fields: [
+        { name: "query", label: contents ? "Text" : "File name or path", required: true },
+        ...(contents
+          ? [
+              {
+                name: "caseSensitive",
+                label: "Match case",
+                type: "toggle" as const,
+                value: "false",
+              },
+              { name: "wholeWord", label: "Whole words", type: "toggle" as const, value: "false" },
+              {
+                name: "useRegex",
+                label: "Regular expression",
+                type: "toggle" as const,
+                value: "false",
+              },
+            ]
+          : []),
+      ],
       submitLabel: "Search",
-      onSubmit: async ({ query = "" }) => {
+      onSubmit: async ({ query = "", caseSensitive, wholeWord, useRegex }) => {
         const cwd = props.cwd();
+        const destination = environment();
         if (!cwd) return;
+        const check = () => {
+          if (cwd !== props.cwd() || destination !== environment())
+            throw new Error("The workspace changed. Search again in the current workspace.");
+        };
         if (contents) {
           const result = await request(props.client, WS_METHODS.projectsSearchContents, {
             cwd,
             query,
             limit: 100,
-            caseSensitive: false,
-            wholeWord: false,
-            useRegex: false,
+            caseSensitive: caseSensitive === "true",
+            wholeWord: wholeWord === "true",
+            useRegex: useRegex === "true",
           });
+          check();
+          if (result.regexFallbackError) props.ui.notify(result.regexFallbackError, true);
           props.ui.choose(
             `${result.matches.length}${result.truncated ? "+" : ""} matching lines`,
             result.matches.map((match) => ({
               title: `${match.path}:${match.lineNumber}`,
               description: match.lineContent.trim(),
-              run: () => openFile(match.path, match.lineNumber),
+              run: () => {
+                check();
+                openFile(match.path, match.lineNumber);
+              },
             })),
           );
         } else {
@@ -295,16 +336,170 @@ export function FilesPanel(
             limit: 100,
             kind: "file",
           });
+          check();
           props.ui.choose(
             `${result.entries.length}${result.truncated ? "+" : ""} matching files`,
             result.entries.map((entry) => ({
               title: entry.path,
-              run: () => openFile(entry.path),
+              run: () => {
+                check();
+                openFile(entry.path);
+              },
             })),
           );
         }
       },
     });
+  }
+
+  function ignoredFiles() {
+    const cwd = props.cwd();
+    const destination = environment();
+    if (!cwd) return;
+    const check = () => {
+      if (cwd !== props.cwd() || destination !== environment())
+        throw new Error("The workspace changed. Find ignored files again.");
+    };
+    props.ui.form({
+      title: "Find ignored file",
+      description:
+        "Untracked files ignored by Git. Entirely ignored directories such as node_modules are omitted.",
+      fields: [{ name: "query", label: "Path contains" }],
+      submitLabel: "Find files",
+      onSubmit: async ({ query = "" }) => {
+        check();
+        const result = await request(props.client, WS_METHODS.projectsListIgnoredFiles, {
+          cwd,
+          query,
+        });
+        check();
+        props.ui.choose(
+          `${result.files.length}${result.truncated ? "+" : ""} ignored files`,
+          result.files.map((file) => ({
+            title: file.path,
+            description: `${file.byteLength} bytes`,
+            run: () => {
+              check();
+              openFile(file.path);
+            },
+          })),
+        );
+      },
+    });
+  }
+  function fileActions() {
+    const cwd = props.cwd();
+    const destination = environment();
+    const row = rows()[active()]?.entry;
+    const path = preview()
+      ? opened()?.file.relativePath
+      : row?.kind === "file"
+        ? row.path
+        : undefined;
+    props.ui.choose("File actions", [
+      { title: "Find ignored file", run: ignoredFiles },
+      ...(path && cwd
+        ? [
+            {
+              title: "Open in environment editor",
+              description: "Launch an editor on the computer hosting this environment.",
+              run: () => {
+                if (cwd !== props.cwd() || destination !== environment())
+                  throw new Error("The workspace changed. Select the file again.");
+                openInEnvironmentEditor(props, cwd, { path });
+              },
+            },
+          ]
+        : []),
+      ...(path && cwd
+        ? [
+            {
+              title: "Read hex preview",
+              description: "First 4 KiB; downloads are limited to 20 MiB.",
+              run: () =>
+                void props.ui.run(async () => {
+                  if (cwd !== props.cwd() || destination !== environment())
+                    throw new Error("The workspace changed. Select the file again.");
+                  const asset = await props.client.readAsset({
+                    _tag: "draft-workspace-file",
+                    cwd,
+                    path,
+                  });
+                  if (cwd !== props.cwd() || destination !== environment())
+                    throw new Error("The workspace changed. Select the file again.");
+                  props.ui.text(`Hex preview: ${path}`, hexPreview(asset.bytes), "text");
+                }),
+            },
+          ]
+        : []),
+      ...(path && cwd
+        ? [
+            {
+              title: "File information",
+              description: path,
+              run: () =>
+                void props.ui.run(async () => {
+                  if (cwd !== props.cwd() || destination !== environment())
+                    throw new Error("The workspace changed. Select the file again.");
+                  const value = await request(props.client, WS_METHODS.filesystemGetMetadata, {
+                    paths: [
+                      /^(?:[\\/]|[a-z]:[\\/]|~[\\/])/i.test(path)
+                        ? path
+                        : `${cwd.replace(/[\\/]$/, "")}/${path}`,
+                    ],
+                  });
+                  if (cwd !== props.cwd() || destination !== environment())
+                    throw new Error("The workspace changed. Select the file again.");
+                  const metadata = value.entries[0];
+                  props.ui.text(
+                    "File information",
+                    metadata
+                      ? [
+                          path,
+                          `Kind: ${metadata.kind}`,
+                          ...(metadata.byteLength === undefined
+                            ? []
+                            : [`Size: ${metadata.byteLength} bytes`]),
+                          ...(metadata.mimeType ? [`Type: ${metadata.mimeType}`] : []),
+                        ].join("\n")
+                      : "This file is missing or unreadable.",
+                  );
+                }),
+            },
+          ]
+        : []),
+      ...(path && cwd && props.ui.openArtifact
+        ? [
+            {
+              title: "Open in external viewer",
+              description: path,
+              run: () => {
+                if (cwd !== props.cwd() || destination !== environment())
+                  throw new Error("The workspace changed. Select the file again.");
+                props.ui.openArtifact?.({ _tag: "draft-workspace-file", cwd, path }, path);
+              },
+            },
+          ]
+        : []),
+      ...(opened() && /\.(md|markdown|csv|tsv|ipynb)$/i.test(opened()!.file.relativePath)
+        ? [
+            {
+              title: formattedPreview() ? "Show source" : "Read formatted preview",
+              run: () => setFormattedPreview((value) => !value),
+            },
+          ]
+        : []),
+      ...(opened() && /\.ipynb$/i.test(opened()!.file.relativePath)
+        ? [
+            {
+              title: notebookImages()
+                ? "Hide cached notebook images"
+                : "Show cached notebook images",
+              run: () => setNotebookImages((value) => !value),
+            },
+          ]
+        : []),
+    ]);
   }
 
   function edit() {
@@ -361,46 +556,51 @@ export function FilesPanel(
     }
   }
 
-  useKeyboard((event) => {
-    if (!props.visible || !props.focused || props.ui.modal() || event.meta) return;
-    if (opened()?.editing) {
-      if (event.ctrl && event.name === "s") void props.ui.run(save);
-      else if (event.name === "escape") leaveEditor();
-      else return;
-    } else if (event.ctrl && event.name === "f") search(true);
-    else if (event.name === "/") search();
-    else if (event.name === "e" && preview()) edit();
-    else if (event.name === "escape" && preview()) setPreview(false);
-    else if (event.name === "r") {
-      setChildren(new Map());
-      setExpanded(new Set<string>());
-      setRevision((value) => value + 1);
-    } else if (preview()) {
-      if (event.name === "up") codeScroll?.scrollBy(-1);
-      else if (event.name === "down") codeScroll?.scrollBy(1);
-      else if (event.name === "pageup") codeScroll?.scrollBy(-1, "viewport");
-      else if (event.name === "pagedown") codeScroll?.scrollBy(1, "viewport");
-      else if (event.name === "home") codeScroll?.scrollTo(0);
-      else if (event.name === "end") codeScroll?.scrollTo(Infinity);
-      else return;
-    } else if (event.name === "up") move(-1);
-    else if (event.name === "down") move(1);
-    else if (event.name === "return" || event.name === "right") activate();
-    else if (event.name === "left") {
-      const row = rows()[active()];
-      if (row?.entry.kind === "directory" && expanded().has(key(row.entry.path)))
-        void props.ui.run(() => toggleDirectory(row.entry));
-      else if (row && row.depth > 0) {
-        const parent = rows().findLastIndex(
-          (entry, index) => index < active() && entry.depth === row.depth - 1,
-        );
-        setSelected(Math.max(0, parent));
-        treeScroll?.scrollChildIntoView(`workspace-file-${rows()[parent]?.entry.path}`);
-      }
-    } else return;
-    event.preventDefault();
-    event.stopPropagation();
-  });
+  useActiveKeyboard(
+    () => props.visible && props.focused && !props.ui.modal(),
+    (event) => {
+      if (event.meta) return;
+      if (opened()?.editing) {
+        if (event.ctrl && event.name === "s") void props.ui.run(save);
+        else if (event.name === "escape") leaveEditor();
+        else return;
+      } else if (event.ctrl && event.name === "f") search(true);
+      else if (event.name === "i") ignoredFiles();
+      else if (event.name === "o") fileActions();
+      else if (event.name === "/") search();
+      else if (event.name === "e" && preview()) edit();
+      else if (event.name === "escape" && preview()) setPreview(false);
+      else if (event.name === "r") {
+        setChildren(new Map());
+        setExpanded(new Set<string>());
+        setRevision((value) => value + 1);
+      } else if (preview()) {
+        if (event.name === "up") codeScroll?.scrollBy(-1);
+        else if (event.name === "down") codeScroll?.scrollBy(1);
+        else if (event.name === "pageup") codeScroll?.scrollBy(-1, "viewport");
+        else if (event.name === "pagedown") codeScroll?.scrollBy(1, "viewport");
+        else if (event.name === "home") codeScroll?.scrollTo(0);
+        else if (event.name === "end") codeScroll?.scrollTo(Infinity);
+        else return;
+      } else if (event.name === "up") move(-1);
+      else if (event.name === "down") move(1);
+      else if (event.name === "return" || event.name === "right") activate();
+      else if (event.name === "left") {
+        const row = rows()[active()];
+        if (row?.entry.kind === "directory" && expanded().has(key(row.entry.path)))
+          void props.ui.run(() => toggleDirectory(row.entry));
+        else if (row && row.depth > 0) {
+          const parent = rows().findLastIndex(
+            (entry, index) => index < active() && entry.depth === row.depth - 1,
+          );
+          setSelected(Math.max(0, parent));
+          treeScroll?.scrollChildIntoView(`workspace-file-${rows()[parent]?.entry.path}`);
+        }
+      } else return;
+      event.preventDefault();
+      event.stopPropagation();
+    },
+  );
 
   return (
     <box visible={props.visible} flexGrow={1} minHeight={0} onMouseDown={props.onFocus}>
@@ -410,6 +610,9 @@ export function FilesPanel(
         </text>
         <text fg={theme.textMuted} onMouseDown={() => search(true)}>
           Search text
+        </text>
+        <text fg={theme.textMuted} onMouseDown={fileActions}>
+          Actions ▾
         </text>
         <Show when={opened() && !opened()?.editing}>
           <text fg={theme.primary} onMouseDown={edit}>
@@ -464,7 +667,7 @@ export function FilesPanel(
                     activate(index());
                   }}
                 >
-                  {`${"  ".repeat(depth)}${entry.kind === "directory" ? (expanded().has(key(entry.path)) ? "▾ " : "▸ ") : "  "}${basename(entry.path)}${entry.kind === "directory" ? "/" : ""}`}
+                  {`${"  ".repeat(depth)}${entry.kind === "directory" ? `${icon(expanded().has(key(entry.path)) ? "collapse" : "expand")} ${icon("folder")} ` : `${icon("file")} `}${basename(entry.path)}${entry.kind === "directory" ? "/" : ""}`}
                 </text>
               )}
             </For>
@@ -522,13 +725,49 @@ export function FilesPanel(
                           setPreview(true);
                         }}
                       >
-                        <code
-                          content={current().file.contents}
-                          filetype={pathToFiletype(current().file.relativePath) ?? "text"}
-                          syntaxStyle={syntax}
-                          drawUnstyledText
-                          wrapMode={preferences().wordWrap ? "word" : "none"}
-                        />
+                        <Show
+                          when={formattedPreview()}
+                          fallback={
+                            <code
+                              content={current().file.contents}
+                              filetype={pathToFiletype(current().file.relativePath) ?? "text"}
+                              syntaxStyle={syntax}
+                              drawUnstyledText
+                              wrapMode={preferences().wordWrap ? "word" : "none"}
+                            />
+                          }
+                        >
+                          <Show
+                            when={/\.ipynb$/i.test(current().file.relativePath)}
+                            fallback={
+                              <Show
+                                when={/\.(csv|tsv)$/i.test(current().file.relativePath)}
+                                fallback={
+                                  <MarkdownMessage
+                                    content={current().file.contents}
+                                    streaming={false}
+                                    syntax={syntax}
+                                    wordWrap={preferences().wordWrap}
+                                  />
+                                }
+                              >
+                                <DelimitedPreview
+                                  name={current().file.relativePath}
+                                  contents={current().file.contents}
+                                />
+                              </Show>
+                            }
+                          >
+                            <NotebookPreview
+                              images={notebookImages()}
+                              toggleImages={() => setNotebookImages((value) => !value)}
+                              contents={current().file.contents}
+                              syntax={syntax}
+                              wrap={preferences().wordWrap}
+                              truncated={current().file.truncated}
+                            />
+                          </Show>
+                        </Show>
                       </scrollbox>
                     }
                   >

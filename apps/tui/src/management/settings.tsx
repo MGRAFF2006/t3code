@@ -21,6 +21,15 @@ import { theme } from "../theme/index.ts";
 import { createTerminalSettings } from "./terminal-settings.tsx";
 import { createSettingsExtras, type ExtraSettingsSection } from "./settings-extras.tsx";
 import { Action, destinationGuard, Section } from "./common.tsx";
+import { keybindingActions } from "./keybindings.ts";
+import { registryProviderActions, searchRegistry } from "./registry.ts";
+import { environmentSettingsActions } from "./environment.ts";
+import { createChatGptProfileActions } from "./chatgpt.ts";
+import {
+  issueTrackerActions,
+  linkedEnvironmentActions,
+  sourceControlActions,
+} from "./integrations.ts";
 
 const decodeSshTarget = Schema.decodeSync(DesktopSshEnvironmentTargetSchema);
 const providerDecoders = new Map(
@@ -62,6 +71,7 @@ export function SettingsPanel(props: FeatureProps) {
   const ExtraDetails = extras.Details;
   const terminal = createTerminalSettings(props);
   const TerminalDetails = terminal.Details;
+  const chatGptProfiles = createChatGptProfileActions(props);
   const provider = createMemo(() => (section() === "providers" ? providers()[index()] : undefined));
 
   const environment = createMemo(() => props.state()?.environmentId);
@@ -252,9 +262,13 @@ export function SettingsPanel(props: FeatureProps) {
   }
 
   function addProvider() {
-    props.ui.choose(
-      "Add provider",
-      providerClients.definitions.map((definition) => ({
+    props.ui.choose("Add provider", [
+      {
+        title: "Find an ACP Registry agent",
+        description: "Search compatible agent distributions.",
+        run: () => searchRegistry(props),
+      },
+      ...providerClients.definitions.map((definition) => ({
         title: definition.label,
         run: () => {
           const existing = providers().find((entry) => entry.driver === definition.driverKind);
@@ -292,7 +306,7 @@ export function SettingsPanel(props: FeatureProps) {
           }
         },
       })),
-    );
+    ]);
   }
 
   function authActions(entry: ServerProvider) {
@@ -301,6 +315,17 @@ export function SettingsPanel(props: FeatureProps) {
     const interaction = state?.interaction;
     const flowId = state?.flowId;
     const actions: Choice[] = [];
+    const authorizationUrl =
+      interaction?.type === "browser" || interaction?.type === "deviceCode"
+        ? interaction.url
+        : state?.authorizationUrl;
+    if (authorizationUrl)
+      actions.push({
+        title: "Open sign-in page",
+        description:
+          interaction?.type === "deviceCode" ? `Code: ${interaction.userCode}` : undefined,
+        run: () => props.ui.openBrowser?.(authorizationUrl),
+      });
     if (state?.methods?.length)
       for (const method of state.methods)
         actions.push({
@@ -447,6 +472,26 @@ export function SettingsPanel(props: FeatureProps) {
             "Sign out",
           ),
       });
+    if (!state || !["starting", "waiting", "verifying"].includes(state.phase))
+      for (const method of state?.methods ?? [])
+        if (method.canRemove)
+          actions.push({
+            title: `Remove saved account: ${method.name}`,
+            description: method.accountEmail ?? method.description ?? undefined,
+            run: () =>
+              props.ui.confirm(
+                "Remove saved account",
+                `Remove ${method.name} from this provider's saved sign-in methods?`,
+                async () => {
+                  guard();
+                  await request(props.client, WS_METHODS.providerAuthRemoveMethod, {
+                    instanceId: entry.instanceId,
+                    methodId: method.id,
+                  });
+                },
+                "Remove account",
+              ),
+          });
     props.ui.choose(`${entry.displayName ?? entry.driver} sign-in`, actions);
   }
 
@@ -716,6 +761,20 @@ export function SettingsPanel(props: FeatureProps) {
         ? [{ title: "Custom models", run: () => customModels(entry) }]
         : []),
       { title: "Environment variables", run: () => providerEnvironment(entry) },
+      ...(entry.driver === "codex"
+        ? [{ title: "ChatGPT profile connections", run: () => chatGptProfiles.open(entry, auth()) }]
+        : []),
+      ...(entry.nativeSessions?.canList ||
+      entry.configurableProviders ||
+      entry.auth.action ||
+      entry.driver === "acpRegistry"
+        ? [
+            {
+              title: "Provider sessions and endpoints",
+              run: () => registryProviderActions(props, entry),
+            },
+          ]
+        : []),
       ...(entry.setup?.canAuthenticate
         ? [{ title: "Sign-in options", run: () => authActions(entry) }]
         : []),
@@ -874,6 +933,26 @@ export function SettingsPanel(props: FeatureProps) {
           description: "Use your existing SSH config, keys, or a password prompt.",
           run: connectSsh,
         },
+        ...(props.state()?.config?.environment.capabilities.peerLinks &&
+        settings()?.linkedEnvironmentsEnabled
+          ? [
+              {
+                title: "Linked environments",
+                description: "Link, inspect, or unlink servers your agents can work on.",
+                run: () => linkedEnvironmentActions(props),
+              },
+            ]
+          : []),
+        {
+          title: "Source-control connections",
+          description: "Forge accounts, saved host tokens, and browser sign-in.",
+          run: () => sourceControlActions(props),
+        },
+        {
+          title: "Issue tracker connections",
+          description: "Connect standalone trackers and select each project's team or project.",
+          run: () => issueTrackerActions(props),
+        },
         {
           title: identity() ? "Sign out of T3 Connect" : "Sign in to T3 Connect",
           value: identity() ?? "Signed out",
@@ -961,6 +1040,11 @@ export function SettingsPanel(props: FeatureProps) {
         run: () => chooseDefault(),
       },
       {
+        title: "Web and desktop keybindings",
+        description: "Inspect, add, edit, or remove the environment's shortcuts.",
+        run: () => keybindingActions(props),
+      },
+      {
         title: "Fallback model",
         value: value.fallbackModelSelection?.model ?? "Automatic",
         run: () => chooseDefault(true),
@@ -990,6 +1074,7 @@ export function SettingsPanel(props: FeatureProps) {
         value: value[key] ? "On" : "Off",
         run: () => update({ [key]: !value[key] }),
       })),
+      ...environmentSettingsActions(props),
       {
         title: "Settle inactive threads after",
         value:

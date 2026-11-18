@@ -1,5 +1,4 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { useKeyboard } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import {
   CommandId,
@@ -12,7 +11,9 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import { removeUnusedWorktree, worktreeInUse } from "./worktrees.ts";
 import { request, subscribe } from "../rpc/request.ts";
 import { theme } from "../theme/index.ts";
+import { useActiveKeyboard } from "../ui/keyboard.ts";
 import type { WorkspaceContext } from "./types.ts";
+import { WorktreeSetupStatus } from "./worktree-setup.tsx";
 
 export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
   const [selected, setSelected] = createSignal(new Set<string>());
@@ -56,7 +57,12 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
     const thread =
       state?.thread?.thread ??
       state?.shell?.threads.find((entry) => entry.id === state.selectedThreadId);
-    return { cwd, environmentId: state?.environmentId, thread };
+    return {
+      cwd,
+      environmentId: state?.environmentId,
+      thread,
+      selectedThreadId: state?.selectedThreadId ?? null,
+    };
   }
 
   function assertCurrent(target: ReturnType<typeof capture>) {
@@ -64,6 +70,8 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
       throw new Error("The connected environment changed. Try again in the selected environment.");
     if (props.cwd() !== target.cwd)
       throw new Error("The selected checkout changed. Try again in that checkout.");
+    if ((props.state()?.selectedThreadId ?? null) !== target.selectedThreadId)
+      throw new Error("The selected thread changed. Open source control actions again.");
   }
 
   function assertIdle(cwd: string) {
@@ -96,8 +104,8 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
     });
   }
 
-  async function switchBranch(ref: VcsRef) {
-    const target = capture();
+  async function switchBranch(ref: VcsRef, target = capture()) {
+    assertCurrent(target);
     assertIdle(target.cwd);
     if (ref.worktreePath && ref.worktreePath !== target.cwd) {
       if (!target.thread) throw new Error("Select a thread to use an existing worktree.");
@@ -126,7 +134,14 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
     props.ui.choose(
       `Switch branch${result.nextCursor !== null ? ` (${result.totalCount} total)` : ""}`,
       [
-        { title: "Create branch…", category: "Actions", run: createBranch },
+        {
+          title: "Create branch…",
+          category: "Actions",
+          run: () => {
+            assertCurrent(target);
+            createBranch();
+          },
+        },
         {
           title: "Find branch…",
           category: "Actions",
@@ -148,7 +163,7 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
               : ref.isRemote
                 ? "Track this remote branch locally"
                 : "Switch checkout"),
-          run: () => void props.ui.run(() => switchBranch(ref)),
+          run: () => void props.ui.run(() => switchBranch(ref, target)),
         })),
       ],
     );
@@ -184,7 +199,14 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
     });
     assertCurrent(target);
     props.ui.choose("Worktrees", [
-      { title: "Create worktree…", category: "Actions", run: createWorktree },
+      {
+        title: "Create worktree…",
+        category: "Actions",
+        run: () => {
+          assertCurrent(target);
+          createWorktree();
+        },
+      },
       {
         title: "Remove unused worktree…",
         category: "Actions",
@@ -236,7 +258,7 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
           title: `${ref.worktreePath === target.cwd ? "✓ " : ""}${ref.name}`,
           description: ref.worktreePath!,
           category: "Checkouts",
-          run: () => void props.ui.run(() => switchBranch(ref)),
+          run: () => void props.ui.run(() => switchBranch(ref, target)),
         })),
     ]);
   }
@@ -400,8 +422,78 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
       },
       { title: "Branches…", run: () => void props.ui.run(branches) },
       { title: "Worktrees…", run: () => void props.ui.run(worktrees) },
+      { title: "Use pull request in this thread…", run: preparePullRequest },
       { title: "Review changes", run: props.ui.showChanges },
     ]);
+  }
+
+  function preparePullRequest() {
+    const target = capture();
+    if (!target.thread)
+      return props.ui.notify("Select a thread before preparing its pull request checkout.");
+    const thread = target.thread;
+    props.ui.form({
+      title: "Use pull request in this thread",
+      fields: [
+        { name: "reference", label: "Pull request URL or number", required: true },
+        {
+          name: "mode",
+          label: "Checkout",
+          type: "select",
+          value: "worktree",
+          options: [
+            { label: "Separate worktree", value: "worktree" },
+            { label: "Current checkout", value: "local" },
+          ],
+        },
+      ],
+      submitLabel: "Review checkout",
+      onSubmit: async ({ reference = "", mode = "worktree" }) => {
+        assertCurrent(target);
+        const result = await request(props.client, WS_METHODS.gitResolvePullRequest, {
+          cwd: target.cwd,
+          reference,
+        });
+        assertCurrent(target);
+        const selectedMode = mode === "local" ? "local" : "worktree";
+        props.ui.confirm(
+          `Use #${result.pullRequest.number}?`,
+          `${result.pullRequest.title}\n${result.pullRequest.url}\n${selectedMode === "worktree" ? "Create or reuse a separate worktree" : "Switch this checkout"} for ${thread.title}.`,
+          async () => {
+            assertCurrent(target);
+            assertIdle(target.cwd);
+            if (!(await props.ui.beforeNavigate())) return;
+            assertCurrent(target);
+            const prepared = await request(props.client, WS_METHODS.gitPreparePullRequestThread, {
+              cwd: target.cwd,
+              reference,
+              mode: selectedMode,
+              threadId: thread.id,
+            });
+            try {
+              await updateThread(
+                target,
+                prepared.branch,
+                selectedMode === "local" ? thread.worktreePath : prepared.worktreePath,
+              );
+            } catch (cause) {
+              throw new Error(
+                `Prepared ${prepared.branch} at ${prepared.worktreePath ?? target.cwd}, but could not attach this thread: ${cause instanceof Error ? cause.message : String(cause)}`,
+                { cause },
+              );
+            }
+            await props.refresh();
+            props.ui.notify(
+              prepared.isOnPullRequestHead
+                ? `Using #${prepared.pullRequest.number}: ${prepared.branch}`
+                : `Using ${prepared.branch}; local changes or commits were kept, so this checkout is not at the pull request head.`,
+              !prepared.isOnPullRequestHead,
+            );
+          },
+          "Prepare checkout",
+        );
+      },
+    });
   }
 
   function initialize() {
@@ -412,33 +504,36 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
     }, "Repository initialized");
   }
 
-  useKeyboard((event) => {
-    if (!props.visible || !props.focused || props.ui.modal() || busy() || event.meta) return;
-    if (event.name === "up" || event.name === "down") {
-      const index = Math.max(
-        0,
-        Math.min(files().length - 1, active() + (event.name === "up" ? -1 : 1)),
-      );
-      setCursor(index);
-      const file = files()[index];
-      if (file) scroll?.scrollChildIntoView(`workspace-git-${file.path}`);
-    } else if (event.name === "space") {
-      const file = files()[active()];
-      if (file) toggle(file.path);
-    } else if (event.name === "a") toggleAll();
-    else if (event.name === "c") commitFiles();
-    else if (event.name === "p") push();
-    else if (event.name === "f") pull();
-    else if (event.name === "b") void props.ui.run(branches);
-    else if (event.name === "w") void props.ui.run(worktrees);
-    else if (event.name === "g") gitActions();
-    else if (event.name === "i" && props.status().local?.isRepo === false) initialize();
-    else if (event.name === "r") void props.ui.run(props.refresh);
-    else if (event.name === "return") props.ui.showChanges();
-    else return;
-    event.preventDefault();
-    event.stopPropagation();
-  });
+  useActiveKeyboard(
+    () => props.visible && props.focused && !props.ui.modal(),
+    (event) => {
+      if (busy() || event.meta) return;
+      if (event.name === "up" || event.name === "down") {
+        const index = Math.max(
+          0,
+          Math.min(files().length - 1, active() + (event.name === "up" ? -1 : 1)),
+        );
+        setCursor(index);
+        const file = files()[index];
+        if (file) scroll?.scrollChildIntoView(`workspace-git-${file.path}`);
+      } else if (event.name === "space") {
+        const file = files()[active()];
+        if (file) toggle(file.path);
+      } else if (event.name === "a") toggleAll();
+      else if (event.name === "c") commitFiles();
+      else if (event.name === "p") push();
+      else if (event.name === "f") pull();
+      else if (event.name === "b") void props.ui.run(branches);
+      else if (event.name === "w") void props.ui.run(worktrees);
+      else if (event.name === "g") gitActions();
+      else if (event.name === "i" && props.status().local?.isRepo === false) initialize();
+      else if (event.name === "r") void props.ui.run(props.refresh);
+      else if (event.name === "return") props.ui.showChanges();
+      else return;
+      event.preventDefault();
+      event.stopPropagation();
+    },
+  );
 
   return (
     <box
@@ -448,6 +543,7 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
       paddingX={1}
       onMouseDown={props.onFocus}
     >
+      <WorktreeSetupStatus {...props} />
       <Show
         when={props.status().local}
         fallback={<text fg={theme.textMuted}>Loading repository status…</text>}

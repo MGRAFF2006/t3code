@@ -1,11 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Preview tests inspect private temporary artifact files without opening a browser.
 import * as NodeFSP from "node:fs/promises";
 import * as NodeURL from "node:url";
+import * as NodePath from "node:path";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "@effect/vitest";
 import { htmlArtifacts } from "./html.ts";
-import { browserCommand, createHtmlPreview } from "./opener.ts";
+import { browserCommand, createFilePreview, createHtmlPreview } from "./opener.ts";
 
 describe("HTML response previews", () => {
   it("offers complete HTML fences, including multiple artifacts, without treating examples inside other fences as artifacts", () => {
@@ -53,6 +54,17 @@ describe("HTML response previews", () => {
         yield* Effect.promise(async () => {
           await expect(NodeFSP.access(path)).rejects.toThrow();
         });
+        const artifact = yield* Effect.acquireRelease(
+          Effect.promise(() =>
+            createFilePreview(new Uint8Array([37, 80, 68, 70]), "../../private/report.pdf"),
+          ),
+          (value) => Effect.promise(value.dispose),
+        );
+        const artifactPath = NodeURL.fileURLToPath(artifact.url);
+        expect(NodePath.basename(artifactPath)).toBe("report.pdf");
+        expect(NodePath.basename(NodePath.dirname(artifactPath))).toMatch(/^t3-tui-artifact-/);
+        const bytes = yield* Effect.promise(() => NodeFSP.readFile(artifactPath));
+        expect([...bytes]).toEqual([37, 80, 68, 70]);
       }),
     ),
   );

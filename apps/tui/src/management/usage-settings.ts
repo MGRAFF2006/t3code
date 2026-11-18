@@ -2,6 +2,7 @@ import { WS_METHODS, type UsageModelPriceOverride } from "@t3tools/contracts";
 import type { Choice, FeatureProps } from "../ui/controller.ts";
 import { request } from "../rpc/request.ts";
 import { destinationGuard } from "./common.tsx";
+import { usageLimitActions } from "./usage-limits.ts";
 
 export function usageSettingsActions(props: FeatureProps): Choice[] {
   const settings = props.state()?.config?.settings;
@@ -101,6 +102,11 @@ export function usageSettingsActions(props: FeatureProps): Choice[] {
     });
   }
   return [
+    {
+      title: "Usage limits and quota hubs",
+      description: "Manage pooled accounts, source connections and reset credits.",
+      run: () => usageLimitActions(props),
+    },
     {
       title: "Usage history retention",
       description:

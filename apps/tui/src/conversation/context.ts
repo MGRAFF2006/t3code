@@ -1,5 +1,18 @@
-import type { MentionContextRecord } from "@t3tools/contracts";
-import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
+import type { KnownComposerContextRecord, MentionContextRecord } from "@t3tools/contracts";
+import {
+  collectComposerContextReferences,
+  formatComposerContextReference,
+} from "@t3tools/shared/composerContextReferences";
+
+export function referencedDraftContext(
+  text: string,
+  records: ReadonlyArray<KnownComposerContextRecord>,
+) {
+  const references = new Set(
+    collectComposerContextReferences(text).map((reference) => reference.contextId),
+  );
+  return records.filter((record) => references.has(record.contextId));
+}
 
 export function resolveFileMentions(text: string, mentions: ReadonlyArray<MentionContextRecord>) {
   const candidates = mentions.toSorted((left, right) => right.path.length - left.path.length);

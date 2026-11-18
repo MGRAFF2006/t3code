@@ -10,6 +10,9 @@ import {
 } from "../connections/files.ts";
 
 const Preferences = Schema.Struct({
+  icons: Schema.Literals(["auto", "nerd", "plain"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("auto")),
+  ),
   theme: Schema.Literals(["dark", "light"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("dark")),
   ),

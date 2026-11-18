@@ -3,6 +3,7 @@ import type { TuiPreferencesPatch } from "../runtime/preferences.ts";
 import type { FeatureProps } from "../ui/controller.ts";
 import { theme } from "../theme/index.ts";
 import { Action, Section } from "./common.tsx";
+import { iconPreview, resolvedIconMode } from "../presentation/icons.ts";
 
 export function createTerminalSettings(props: FeatureProps) {
   const [preferences, setPreferences] = createSignal(props.client.preferences());
@@ -19,6 +20,48 @@ export function createTerminalSettings(props: FeatureProps) {
         props.ui.choose("Terminal appearance", [
           { title: "Dark", run: () => save({ theme: "dark" }) },
           { title: "Light", run: () => save({ theme: "light" }) },
+        ]),
+    },
+    {
+      title: "Icons",
+      value: `${preferences().icons === "auto" ? "Auto · " : ""}${resolvedIconMode() === "nerd" ? "Nerd Font" : "Plain"}`,
+      description:
+        "Decorative icons retain readable labels. Choose Plain if glyphs appear as boxes.",
+      run: () =>
+        props.ui.choose("Terminal icons", [
+          {
+            title: "Auto",
+            description: "Use bundled icons in Ghostty/WezTerm; plain symbols elsewhere.",
+            run: () => save({ icons: "auto" }),
+          },
+          {
+            title: "Nerd Font",
+            description: "Your terminal already uses a Nerd Font or symbol fallback.",
+            run: () => save({ icons: "nerd" }),
+          },
+          {
+            title: "Plain",
+            description: "Use ordinary symbols and text, without patched-font requirements.",
+            run: () => save({ icons: "plain" }),
+          },
+          {
+            title: "Font preview and setup",
+            run: () =>
+              props.ui.choose("Nerd Font setup", [
+                {
+                  title: "Show sample icons",
+                  run: () =>
+                    props.ui.text(
+                      "Nerd Font preview",
+                      `${iconPreview()}\n\nIf these appear as boxes, install a Nerd Font and select it in your terminal's font settings. JetBrainsMono Nerd Font Mono is one option. For remote connections, configure the terminal on your own computer.\n\nThe TUI cannot reliably inspect another terminal's configured font. Plain mode always remains available.\n\nhttps://www.nerdfonts.com/font-downloads`,
+                    ),
+                },
+                {
+                  title: "Open font downloads",
+                  run: () => props.ui.openBrowser?.("https://www.nerdfonts.com/font-downloads"),
+                },
+              ]),
+          },
         ]),
     },
     {
@@ -70,7 +113,7 @@ export function createTerminalSettings(props: FeatureProps) {
     {
       title: "Reset terminal preferences",
       description:
-        "Restore dark appearance, Enter to send, queued follow-ups, wrapping and unified diffs.",
+        "Restore dark appearance, automatic icons, Enter to send, queued follow-ups, wrapping and unified diffs.",
       run: () =>
         props.ui.confirm(
           "Reset terminal preferences",
@@ -78,6 +121,7 @@ export function createTerminalSettings(props: FeatureProps) {
           async () => {
             await props.client.updatePreferences({
               theme: "dark",
+              icons: "auto",
               sendShortcut: "enter",
               followUpMode: "queue",
               wordWrap: true,

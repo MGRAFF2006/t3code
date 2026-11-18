@@ -1,10 +1,11 @@
 import { expect, it } from "@effect/vitest";
-import type { MentionContextRecord } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, type MentionContextRecord } from "@t3tools/contracts";
 import {
   toKindScopedComposerContextId,
   formatComposerContextReference,
+  threadContextRecord,
 } from "@t3tools/shared/composerContextReferences";
-import { resolveFileMentions } from "./context.ts";
+import { referencedDraftContext, resolveFileMentions } from "./context.ts";
 
 it("preserves distinct file mentions with overlapping paths and ignores path prefixes and email text", () => {
   const record = (path: string): MentionContextRecord => ({
@@ -36,4 +37,19 @@ it("preserves distinct file mentions with overlapping paths and ignores path pre
     text: `Only ${formatComposerContextReference(long)} and mail@src/foo`,
     records: [long],
   });
+});
+
+it("sends structured context only while its identity remains referenced in the edited message", () => {
+  const first = threadContextRecord(
+    { environmentId: EnvironmentId.make("environment-a"), threadId: ThreadId.make("thread-a") },
+    "Same title",
+  );
+  const second = threadContextRecord(
+    { environmentId: EnvironmentId.make("environment-a"), threadId: ThreadId.make("thread-b") },
+    "Same title",
+  );
+  expect(
+    referencedDraftContext(`Use ${formatComposerContextReference(second)}`, [first, second]),
+  ).toEqual([second]);
+  expect(referencedDraftContext("Use Same title as plain text", [first, second])).toEqual([]);
 });

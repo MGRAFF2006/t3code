@@ -3,6 +3,7 @@ import type {
   OrchestrationV2ProjectedTurnItem,
   OrchestrationV2ThreadProjection,
   OrchestrationV2TurnItem,
+  OrchestrationV2CommandOutputFrame,
 } from "@t3tools/contracts";
 import {
   CodeRenderable,
@@ -29,6 +30,21 @@ import {
 import { htmlArtifacts } from "./presentation/html.ts";
 import { NativeImagePreview } from "./presentation/media.tsx";
 import type { AssetBytes } from "./runtime/assets.ts";
+import {
+  applyCommandOutputFrame,
+  EMPTY_COMMAND_OUTPUT,
+  type CommandOutputView,
+} from "@t3tools/client-runtime/state/command-output";
+import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
+import { icon } from "./presentation/icons.ts";
+import { messageLinks } from "./presentation/links.ts";
+import {
+  groupTranscriptItems,
+  summarizeTranscriptWork,
+  transcriptItemKey,
+  transcriptEntryMatches,
+  type TranscriptRow,
+} from "./transcript.logic.ts";
 
 function showPendingCode(node: Renderable, wordWrap = true) {
   if (node instanceof TextBufferRenderable) node.wrapMode = wordWrap ? "word" : "none";
@@ -177,6 +193,15 @@ function Item(props: {
   onFocus?: (() => void) | undefined;
   rowRef?: ((node: Renderable) => void) | undefined;
   expandAll?: boolean | undefined;
+  highlighted?: boolean | undefined;
+  onOpenLinks?: (() => void) | undefined;
+  cwd?: string | undefined;
+  subscribeOutput?:
+    | ((
+        onFrame: (frame: OrchestrationV2CommandOutputFrame) => void,
+        onError: (error: Error) => void,
+      ) => () => void)
+    | undefined;
   onOpenHtml?: ((html: string, title?: string) => void) | undefined;
   onPreviewAsset?: ((resource: AssetResource, label: string) => void) | undefined;
   loadAsset?: ((resource: AssetResource) => Promise<AssetBytes>) | undefined;
@@ -221,6 +246,12 @@ function Item(props: {
   const html = createMemo(() =>
     props.item.type === "assistant_message" ? htmlArtifacts(props.item.text) : [],
   );
+  const links = createMemo(() => {
+    const item = props.item;
+    return item.type === "user_message" || item.type === "assistant_message"
+      ? messageLinks(item.text, props.cwd)
+      : [];
+  });
   const isMessage = () =>
     props.item.type === "user_message" || props.item.type === "assistant_message";
   const isPlan = () => props.item.type === "proposed_plan" || props.item.type === "todo_list";
@@ -228,9 +259,32 @@ function Item(props: {
     isMessage() ||
     isPlan() ||
     props.item.type === "error" ||
+    props.item.type === "system_notice" ||
+    props.item.type === "notification" ||
     secretDisplay()?.kind === "pending" ||
     expanded() ||
-    props.expandAll;
+    props.expandAll ||
+    props.highlighted;
+  const [commandOutput, setCommandOutput] = createSignal<CommandOutputView | null>(null);
+  const [outputError, setOutputError] = createSignal<string | null>(null);
+  const [outputRevision, setOutputRevision] = createSignal(0);
+  // Expanded command rows own their bounded live output subscription.
+  createEffect(() => {
+    outputRevision();
+    if (!showBody() || props.item.type !== "command_execution" || !props.subscribeOutput) {
+      setCommandOutput(null);
+      return;
+    }
+    setOutputError(null);
+    const stop = props.subscribeOutput(
+      (frame) =>
+        setCommandOutput((previous) =>
+          applyCommandOutputFrame(previous ?? EMPTY_COMMAND_OUTPUT, frame),
+        ),
+      (error) => setOutputError(error.message),
+    );
+    onCleanup(stop);
+  });
   const toggle = () => {
     props.onFocus?.();
     setExpanded((value) => !value);
@@ -238,9 +292,15 @@ function Item(props: {
   const item = () => props.item;
   const streaming = () => {
     const value = item();
-    return "streaming" in value && value.streaming;
+    return "streaming" in value ? value.streaming : isOrchestrationV2WorkActive(value.status);
   };
-  const content = createMemo(() => turnItemText(item(), true));
+  const content = createMemo(() => {
+    const value = item();
+    const live = commandOutput();
+    return value.type === "command_execution" && live
+      ? `$ ${value.input}\n${live.output.truncated ? "Earlier output not shown\n" : ""}${Bun.stripANSI(live.output.text)}`
+      : turnItemText(value, true);
+  });
   const label = () => {
     const value = item();
     if (value.type === "user_message") return "You";
@@ -254,7 +314,7 @@ function Item(props: {
   };
   const summary = () => {
     const value = item();
-    const mark = value.status === "failed" ? "!" : streaming() ? "…" : "✓";
+    const mark = value.status === "failed" ? icon("warning") : streaming() ? "…" : icon("success");
     if (value.type === "command_execution") return `${mark} $ ${value.input.replaceAll("\n", " ")}`;
     if (value.type === "file_change") return `${mark} ${value.fileName}`;
     if (value.type === "reasoning") return streaming() ? "Thinking…" : "Thought process";
@@ -272,9 +332,19 @@ function Item(props: {
       ref={(node) => props.rowRef?.(node)}
       paddingLeft={1}
       marginBottom={isMessage() || isPlan() ? 1 : 0}
-      border={isMessage() || isPlan() ? ["left"] : false}
-      borderColor={item().type === "user_message" ? theme.borderActive : theme.borderSubtle}
-      backgroundColor={item().type === "user_message" ? theme.backgroundPanel : theme.background}
+      border={isMessage() || isPlan() || props.highlighted ? ["left"] : false}
+      borderColor={
+        item().type === "user_message" || props.highlighted
+          ? theme.borderActive
+          : theme.borderSubtle
+      }
+      backgroundColor={
+        props.highlighted
+          ? theme.backgroundElement
+          : item().type === "user_message"
+            ? theme.backgroundPanel
+            : theme.background
+      }
     >
       <box flexDirection="row" height={1}>
         <text
@@ -289,7 +359,7 @@ function Item(props: {
                 }
               : toggle
           }
-        >{`${isMessage() || isPlan() ? "" : showBody() ? "▾ " : "▸ "}${summary()}`}</text>
+        >{`${isMessage() || isPlan() ? "" : `${icon(showBody() ? "collapse" : "expand")} `}${summary()}`}</text>
         <Show when={showBody() && !isMessage()}>
           <text
             fg={theme.textMuted}
@@ -312,6 +382,12 @@ function Item(props: {
           >
             {" "}
             Copy{" "}
+          </text>
+        </Show>
+        <Show when={links().length && props.onOpenLinks}>
+          <text fg={theme.textMuted} onMouseDown={() => props.onOpenLinks?.()}>
+            {" "}
+            Links{" "}
           </text>
         </Show>
         <Show when={item().type === "file_change"}>
@@ -363,6 +439,11 @@ function Item(props: {
             streaming={Boolean(streaming())}
           />
         </Show>
+      </Show>
+      <Show when={showBody() && outputError()}>
+        <text fg={theme.error} onMouseDown={() => setOutputRevision((value) => value + 1)}>
+          {outputError()} · Retry output
+        </text>
       </Show>
       <Show when={secret()}>
         {(value) => (
@@ -455,6 +536,96 @@ function Item(props: {
   );
 }
 
+function WorkGroup(props: {
+  row: TranscriptRow;
+  expanded: boolean;
+  onToggle: () => void;
+  onFocus?: (() => void) | undefined;
+  rowRef?: ((entry: OrchestrationV2ProjectedTurnItem, node: Renderable) => void) | undefined;
+  onLoadWork?: ((entry: OrchestrationV2ProjectedTurnItem) => Promise<void>) | undefined;
+  renderItem: (entry: OrchestrationV2ProjectedTurnItem) => ReturnType<typeof Item>;
+}) {
+  const summary = createMemo(() => summarizeTranscriptWork(props.row.entries));
+  const [loading, setLoading] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+  let group: Renderable | undefined;
+  let disposed = false;
+  let requestedCursor: string | undefined;
+  onCleanup(() => {
+    disposed = true;
+  });
+  // Expanding a native work group hydrates the server's deferred history pages.
+  createEffect(() => {
+    const anchors = props.row.entries.filter((entry) => entry.item.deferredWork);
+    if (!props.expanded) {
+      requestedCursor = undefined;
+      return;
+    }
+    const cursor = anchors
+      .map((entry) => `${transcriptItemKey(entry)}:${entry.item.deferredWork!.cursor}`)
+      .join("\n");
+    if (!anchors.length || loading() || error() || !props.onLoadWork || requestedCursor === cursor)
+      return;
+    requestedCursor = cursor;
+    setLoading(true);
+    void Promise.all(anchors.map((entry) => props.onLoadWork!(entry)))
+      .catch((cause: unknown) => {
+        if (!disposed) setError(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => {
+        if (!disposed) setLoading(false);
+      });
+  });
+  createEffect(() => {
+    if (group && !props.expanded) {
+      for (const entry of props.row.entries) props.rowRef?.(entry, group);
+    }
+  });
+  return (
+    <box
+      ref={(node) => {
+        group = node;
+        props.rowRef?.(props.row.entries[0]!, node);
+      }}
+    >
+      <text
+        paddingLeft={1}
+        height={1}
+        truncate
+        fg={summary().hasFailure ? theme.warning : theme.textMuted}
+        onMouseDown={() => {
+          props.onFocus?.();
+          if (error()) {
+            requestedCursor = undefined;
+            setError(null);
+          } else props.onToggle();
+        }}
+      >
+        {`${icon(props.expanded ? "collapse" : "expand")} ${summary().label}${summary().active ? ` · ${summary().active} running` : ""}${summary().hasFailure ? " · failed work" : ""}`}
+      </text>
+      <Show when={props.expanded}>
+        <box paddingLeft={1}>
+          <For each={props.row.entries}>{(entry) => props.renderItem(entry)}</For>
+          <Show when={loading()}>
+            <text fg={theme.textMuted}>Loading earlier work…</text>
+          </Show>
+          <Show when={error()}>
+            <text
+              fg={theme.error}
+              onMouseDown={() => {
+                requestedCursor = undefined;
+                setError(null);
+              }}
+            >
+              {error()} · Retry
+            </text>
+          </Show>
+        </box>
+      </Show>
+    </box>
+  );
+}
+
 export function Transcript(props: {
   projection: OrchestrationV2ThreadProjection;
   onOpenItem?: (item: OrchestrationV2ProjectedTurnItem) => void;
@@ -471,10 +642,37 @@ export function Transcript(props: {
   loadAsset?: ((resource: AssetResource) => Promise<AssetBytes>) | undefined;
   onCopy?: ((text: string) => void) | undefined;
   onSecretRequest?: ((item: SecretRequestItem) => void) | undefined;
+  onLoadWork?: ((entry: OrchestrationV2ProjectedTurnItem) => Promise<void>) | undefined;
+  highlightedEntryId?: string | undefined;
+  onCommandOutput?:
+    | ((
+        entry: OrchestrationV2ProjectedTurnItem,
+        onFrame: (frame: OrchestrationV2CommandOutputFrame) => void,
+        onError: (error: Error) => void,
+      ) => () => void)
+    | undefined;
+  onOpenLinks?: ((entry: OrchestrationV2ProjectedTurnItem) => void) | undefined;
+  cwd?: string | undefined;
 }) {
   const renderer = useRenderer();
   const syntax = createSyntax(renderer.nativeScene);
   onCleanup(() => syntax.destroy());
+  const [expandedGroups, setExpandedGroups] = createSignal<ReadonlySet<string>>(new Set());
+  const [collapsedGroups, setCollapsedGroups] = createSignal<ReadonlySet<string>>(new Set());
+  let previouslyExpanded = Boolean(props.expandAll);
+  createEffect(() => {
+    const expanded = Boolean(props.expandAll);
+    if (previouslyExpanded !== expanded) {
+      setExpandedGroups(new Set<string>());
+      setCollapsedGroups(new Set<string>());
+    }
+    previouslyExpanded = expanded;
+  });
+  const grouped = createMemo(
+    () =>
+      new Map(groupTranscriptItems(props.projection.visibleTurnItems).map((row) => [row.key, row])),
+  );
+  const keys = createMemo(() => [...grouped().keys()]);
   const items = createMemo(() =>
     props.projection.visibleTurnItems.filter((entry) => {
       if (!props.hidePendingRequests) return true;
@@ -487,6 +685,7 @@ export function Transcript(props: {
       );
     }),
   );
+  const visibleKeys = createMemo(() => new Set(items().map(transcriptItemKey)));
   return (
     <Show
       when={items().length > 0}
@@ -505,26 +704,77 @@ export function Transcript(props: {
         </For>
       }
     >
-      <For each={items()}>
-        {(entry) => (
-          <Item
-            item={entry.item}
-            visibility={entry.visibility}
-            onOpenOriginal={() => props.onOpenThread?.(entry.sourceThreadId)}
-            syntax={syntax}
-            wordWrap={props.wordWrap}
-            onOpen={() => props.onOpenItem?.(entry)}
-            onOpenFile={props.onOpenFile}
-            onFocus={props.onFocus}
-            expandAll={props.expandAll}
-            onOpenHtml={props.onOpenHtml}
-            onPreviewAsset={props.onPreviewAsset}
-            loadAsset={props.loadAsset}
-            onCopy={props.onCopyItem ? () => props.onCopyItem?.(entry) : props.onCopy}
-            onSecretRequest={props.onSecretRequest}
-            rowRef={(node) => props.rowRef?.(entry, node)}
-          />
-        )}
+      <For each={keys()}>
+        {(key) => {
+          const row = () => grouped().get(key)!;
+          const visible = () => visibleKeys().has(key);
+          const isGroup = () =>
+            row().entries.length > 1 || Boolean(row().entries[0]?.item.deferredWork);
+          const expanded = () =>
+            row().entries.some((entry) =>
+              transcriptEntryMatches(entry, props.highlightedEntryId),
+            ) ||
+            (!row().entries.some((entry) => collapsedGroups().has(transcriptItemKey(entry))) &&
+              (Boolean(props.expandAll) ||
+                row().entries.some((entry) => expandedGroups().has(transcriptItemKey(entry)))));
+          const renderItem = (entry: OrchestrationV2ProjectedTurnItem) => (
+            <Item
+              item={entry.item}
+              visibility={entry.visibility}
+              onOpenOriginal={() => props.onOpenThread?.(entry.sourceThreadId)}
+              syntax={syntax}
+              wordWrap={props.wordWrap}
+              onOpen={() => props.onOpenItem?.(entry)}
+              onOpenFile={props.onOpenFile}
+              onFocus={props.onFocus}
+              expandAll={props.expandAll}
+              highlighted={transcriptEntryMatches(entry, props.highlightedEntryId)}
+              cwd={props.cwd}
+              onOpenLinks={props.onOpenLinks ? () => props.onOpenLinks!(entry) : undefined}
+              subscribeOutput={
+                props.onCommandOutput
+                  ? (onFrame, onError) => props.onCommandOutput!(entry, onFrame, onError)
+                  : undefined
+              }
+              onOpenHtml={props.onOpenHtml}
+              onPreviewAsset={props.onPreviewAsset}
+              loadAsset={props.loadAsset}
+              onCopy={props.onCopyItem ? () => props.onCopyItem?.(entry) : props.onCopy}
+              onSecretRequest={props.onSecretRequest}
+              rowRef={(node) => props.rowRef?.(entry, node)}
+            />
+          );
+          return (
+            <Show when={visible()}>
+              <Show when={isGroup()} fallback={renderItem(row().entries[0]!)}>
+                <WorkGroup
+                  row={row()}
+                  expanded={expanded()}
+                  onToggle={() => {
+                    const close = expanded();
+                    const keys = row().entries.map(transcriptItemKey);
+                    setExpandedGroups((current) => {
+                      const next = new Set(current);
+                      if (close) for (const key of keys) next.delete(key);
+                      else next.add(key);
+                      return next;
+                    });
+                    setCollapsedGroups((current) => {
+                      const next = new Set(current);
+                      if (close) next.add(key);
+                      else for (const key of keys) next.delete(key);
+                      return next;
+                    });
+                  }}
+                  onLoadWork={props.onLoadWork}
+                  onFocus={props.onFocus}
+                  rowRef={props.rowRef}
+                  renderItem={renderItem}
+                />
+              </Show>
+            </Show>
+          );
+        }}
       </For>
     </Show>
   );
