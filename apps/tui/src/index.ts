@@ -25,12 +25,13 @@ async function main() {
       });
   let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
   const close = () => {
-    client?.close();
-    renderer?.destroy();
+    if (renderer) renderer.destroy();
+    else client?.close();
   };
   try {
     if (options.thread) client?.selectThread(options.thread);
     renderer = await createCliRenderer({ exitOnCtrlC: false, targetFps: 30 });
+    renderer.once("destroy", () => client?.close());
     await render(
       () => createComponent(App, { client, demo: options.demo, onExit: close }),
       renderer,
