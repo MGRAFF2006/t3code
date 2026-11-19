@@ -101,6 +101,12 @@ function ThreadConversation(
 ) {
   const dimensions = useTerminalDimensions();
   const renderer = useRenderer();
+  let panel: Renderable | undefined;
+  const [panelWidth, setPanelWidth] = createSignal(dimensions().width);
+  const measurePanel = () => {
+    if (panel && !panel.isDestroyed && panel.width > 0) setPanelWidth(panel.width);
+  };
+  const compactControls = () => panelWidth() < 95;
   const environmentId = props.state()?.environmentId;
   const destinationThreadId = props.projection().thread.id;
   let disposed = false;
@@ -1605,7 +1611,17 @@ function ThreadConversation(
     }
   });
   return (
-    <box flexGrow={1} minHeight={0} onMouseDown={props.onFocus}>
+    <box
+      ref={(node) => {
+        panel = node;
+        measurePanel();
+      }}
+      onSizeChange={measurePanel}
+      flexGrow={1}
+      minWidth={0}
+      minHeight={0}
+      onMouseDown={props.onFocus}
+    >
       <Show when={findQuery() && (findResult() || finding())}>
         <box height={1} paddingX={1} flexDirection="row" gap={2}>
           <text
@@ -1640,7 +1656,7 @@ function ThreadConversation(
         stickyStart="bottom"
         scrollY
         scrollX={!preferences().wordWrap}
-        contentOptions={{ paddingX: dimensions().width > 120 ? 3 : 1 }}
+        contentOptions={{ paddingX: 1 }}
       >
         <Show when={props.state()?.hasMoreHistory}>
           <text selectable={false} fg={theme.primary} onMouseDown={loadEarlier}>
@@ -1865,9 +1881,8 @@ function ThreadConversation(
         </Show>
       </box>
       <box
-        marginTop={1}
+        marginTop={dimensions().height < 24 ? 0 : 1}
         paddingX={1}
-        paddingY={1}
         backgroundColor={theme.backgroundPanel}
         border={["left"]}
         borderColor={props.focused ? theme.borderActive : theme.borderSubtle}
@@ -1903,8 +1918,8 @@ function ThreadConversation(
           }}
           initialValue={initialDraft.text}
           focused={props.focused && !props.ui.modal() && !requestFocus()}
-          minHeight={2}
-          maxHeight={7}
+          minHeight={dimensions().height < 30 ? 1 : 2}
+          maxHeight={dimensions().height < 30 ? 5 : 7}
           placeholder={
             sending()
               ? "Sending…"
@@ -1938,9 +1953,10 @@ function ThreadConversation(
               void props.ui.run(() => send());
           }}
         />
-        <box flexDirection="row" height={1} marginTop={1}>
+        <box flexDirection="row" height={1} gap={1} marginTop={dimensions().height < 30 ? 0 : 1}>
           <text
             selectable={false}
+            flexShrink={0}
             fg={thread().interactionMode === "plan" ? theme.primary : theme.textMuted}
             onMouseDown={togglePlan}
           >
@@ -1950,35 +1966,67 @@ function ThreadConversation(
             selectable={false}
             fg={theme.text}
             onMouseDown={props.ui.chooseModel}
-            truncate
-          >{`  ${thread().modelSelection.model}`}</text>
-          <text selectable={false} fg={theme.textMuted} onMouseDown={options}>
-            {" "}
-            ⚙{" "}
-          </text>
-          <text selectable={false} fg={theme.textMuted} onMouseDown={attach}>
-            {" "}
-            Attach{" "}
-          </text>
-          <text selectable={false} fg={theme.textMuted} onMouseDown={contextMenu}>
-            {" "}
-            Context{" "}
-          </text>
-          <text selectable={false} fg={theme.textMuted} onMouseDown={savedPrompts}>
-            {" "}
-            Saved{" "}
-          </text>
-          <text
-            selectable={false}
-            fg={theme.textMuted}
             flexGrow={1}
+            minWidth={0}
+            height={1}
+            flexShrink={1}
+            maxWidth={compactControls() ? "100%" : Math.max(12, Math.floor(panelWidth() * 0.3))}
             truncate
-            onMouseDown={permissions}
           >
-            {runtimeLabels[thread().runtimeMode]}
+            {thread().modelSelection.model}
           </text>
+          <Show
+            when={!compactControls()}
+            fallback={
+              <text
+                selectable={false}
+                flexShrink={0}
+                fg={theme.textMuted}
+                onMouseDown={() =>
+                  props.ui.choose("Composer actions", [
+                    { title: "Attach files", run: attach },
+                    { title: "Add context", run: contextMenu },
+                    { title: "Saved prompts", run: savedPrompts },
+                    { title: "Model options", run: options },
+                    {
+                      title: `Permissions: ${runtimeLabels[thread().runtimeMode]}`,
+                      run: permissions,
+                    },
+                  ])
+                }
+              >
+                More ▾
+              </text>
+            }
+          >
+            <text selectable={false} flexShrink={0} fg={theme.textMuted} onMouseDown={options}>
+              ⚙
+            </text>
+            <text selectable={false} flexShrink={0} fg={theme.textMuted} onMouseDown={attach}>
+              Attach
+            </text>
+            <text selectable={false} flexShrink={0} fg={theme.textMuted} onMouseDown={contextMenu}>
+              Context
+            </text>
+            <text selectable={false} flexShrink={0} fg={theme.textMuted} onMouseDown={savedPrompts}>
+              Saved
+            </text>
+            <text
+              selectable={false}
+              fg={theme.textMuted}
+              flexGrow={1}
+              minWidth={0}
+              height={1}
+              flexShrink={1}
+              truncate
+              onMouseDown={permissions}
+            >
+              {runtimeLabels[thread().runtimeMode]}
+            </text>
+          </Show>
           <text
             selectable={false}
+            flexShrink={0}
             fg={
               (draft().trim() || attachments().length > 0) && !sending()
                 ? theme.primary

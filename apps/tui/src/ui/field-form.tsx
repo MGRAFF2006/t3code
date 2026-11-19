@@ -115,24 +115,34 @@ export function FieldForm(props: { options: FieldFormOptions; onClose: () => voi
     event.preventDefault();
     event.stopPropagation();
   });
+  const descriptionRows = () => (dimensions().height >= 24 ? 3 : 2);
   return (
     <Dialog title={props.options.title} width={88} onClose={() => !busy() && props.onClose()}>
       <Show when={props.options.description}>
-        <text fg={theme.textMuted} wrapMode="word" marginBottom={1}>
-          {props.options.description}
-        </text>
+        <scrollbox maxHeight={descriptionRows()} flexShrink={0} marginBottom={1}>
+          <text fg={theme.textMuted} wrapMode="word">
+            {props.options.description}
+          </text>
+        </scrollbox>
       </Show>
       <scrollbox
         ref={(element) => {
           fields = element;
         }}
-        maxHeight={Math.max(3, dimensions().height - 12)}
+        minHeight={1}
+        maxHeight={Math.max(
+          1,
+          dimensions().height -
+            (dimensions().height < 20 ? 7 : 9) -
+            (props.options.description ? descriptionRows() + 1 : 0),
+        )}
       >
         <For each={props.options.fields}>
           {(field, index) => (
             <box
               id={`form-field-${index()}`}
               marginBottom={1}
+              flexShrink={0}
               onMouseDown={() => {
                 if (busy() || active() === index()) return;
                 flush();
@@ -145,51 +155,51 @@ export function FieldForm(props: { options: FieldFormOptions; onClose: () => voi
                 {field.label}
                 {field.required ? " *" : ""}
               </text>
+              <box paddingLeft={2}>
+                <Show
+                  when={field.type === "select" || field.type === "toggle"}
+                  fallback={
+                    <Show
+                      when={active() === index() && field.type !== "secret"}
+                      fallback={
+                        <text selectable={false} fg={theme.textMuted} truncate>
+                          {field.type === "secret"
+                            ? "•".repeat((values()[field.name] ?? "").length)
+                            : values()[field.name] || "…"}
+                        </text>
+                      }
+                    >
+                      <textarea
+                        ref={(element) => {
+                          editor = element;
+                        }}
+                        focused={!busy()}
+                        initialValue={values()[field.name] ?? ""}
+                        height={field.type === "multiline" ? 4 : 1}
+                        backgroundColor={theme.backgroundElement}
+                        focusedBackgroundColor={theme.backgroundElement}
+                        textColor={theme.text}
+                        focusedTextColor={theme.text}
+                        cursorColor={theme.primary}
+                      />
+                    </Show>
+                  }
+                >
+                  <text selectable={false} fg={theme.text}>
+                    {"‹ "}
+                    {field.type === "toggle"
+                      ? values()[field.name] === "true"
+                        ? "On"
+                        : "Off"
+                      : (field.options?.find((option) => option.value === values()[field.name])
+                          ?.label ?? "Choose…")}
+                    {" ›"}
+                  </text>
+                </Show>
+              </box>
               <Show when={field.description}>
-                <text fg={theme.textMuted} wrapMode="word">
-                  {" "}
+                <text fg={theme.textMuted} wrapMode="word" paddingLeft={2}>
                   {field.description}
-                </text>
-              </Show>
-              <Show
-                when={field.type === "select" || field.type === "toggle"}
-                fallback={
-                  <Show
-                    when={active() === index() && field.type !== "secret"}
-                    fallback={
-                      <text selectable={false} fg={theme.textMuted} truncate>
-                        {" "}
-                        {field.type === "secret"
-                          ? "•".repeat((values()[field.name] ?? "").length)
-                          : values()[field.name] || "…"}
-                      </text>
-                    }
-                  >
-                    <textarea
-                      ref={(element) => {
-                        editor = element;
-                      }}
-                      focused={!busy()}
-                      initialValue={values()[field.name] ?? ""}
-                      height={field.type === "multiline" ? 4 : 1}
-                      backgroundColor={theme.backgroundElement}
-                      focusedBackgroundColor={theme.backgroundElement}
-                      textColor={theme.text}
-                      focusedTextColor={theme.text}
-                      cursorColor={theme.primary}
-                    />
-                  </Show>
-                }
-              >
-                <text selectable={false} fg={theme.text}>
-                  {"  ‹ "}
-                  {field.type === "toggle"
-                    ? values()[field.name] === "true"
-                      ? "On"
-                      : "Off"
-                    : (field.options?.find((option) => option.value === values()[field.name])
-                        ?.label ?? "Choose…")}
-                  {" ›"}
                 </text>
               </Show>
             </box>
@@ -197,14 +207,27 @@ export function FieldForm(props: { options: FieldFormOptions; onClose: () => voi
         </For>
       </scrollbox>
       <Show when={error()}>
-        <text fg={theme.error} wrapMode="word">
-          {error()}
-        </text>
+        <scrollbox maxHeight={2} flexShrink={0}>
+          <text fg={theme.error} wrapMode="word">
+            {error()}
+          </text>
+        </scrollbox>
       </Show>
-      <text selectable={false} fg={theme.primary} marginTop={1} onMouseDown={() => void submit()}>
+      <text
+        selectable={false}
+        fg={theme.primary}
+        height={1}
+        flexShrink={0}
+        marginTop={1}
+        onMouseDown={() => void submit()}
+      >
         {busy() ? "Working…" : (props.options.submitLabel ?? "Save")}
       </text>
-      <text fg={theme.textMuted}>tab next field · ←→ choose · ctrl+s / F2 save · esc cancel</text>
+      <text fg={theme.textMuted} height={1} flexShrink={0} truncate>
+        {dimensions().width < 60
+          ? "Tab field · ^S / F2 save · Esc"
+          : "tab next field · ←→ choose · ctrl+s / F2 save · esc cancel"}
+      </text>
     </Dialog>
   );
 }

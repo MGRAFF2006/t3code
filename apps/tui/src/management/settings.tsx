@@ -1,4 +1,5 @@
-import { useKeyboard } from "@opentui/solid";
+import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
+import type { Renderable } from "@opentui/core";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { getProviderClient, providerClients } from "@t3tools/client-runtime/provider-clients";
 import {
@@ -53,6 +54,10 @@ interface SettingsEntry extends Choice {
 export function SettingsPanel(
   props: FeatureProps & { initialProviderId?: ProviderInstanceId | undefined },
 ) {
+  const dimensions = useTerminalDimensions();
+  const [panelWidth, setPanelWidth] = createSignal(0);
+  let panel: Renderable | undefined;
+  const compact = () => (panelWidth() || dimensions().width) < 96;
   const [section, setSection] = createSignal<SectionName>(
     props.initialProviderId
       ? "providers"
@@ -1143,6 +1148,25 @@ export function SettingsPanel(
     setIndex(0);
     setPane("list");
   }
+  const sections = [
+    ["environment", "Environment", "1"],
+    ["providers", "Providers", "2"],
+    ["connections", "Connections", "3"],
+    ["usage", "Usage", "4"],
+    ["maintenance", "Maintenance", "5"],
+    ["access", "Access", "6"],
+    ["secrets", "Secrets", "7"],
+    ["terminal", "Terminal", "8"],
+  ] as const;
+  function chooseSection() {
+    props.ui.choose(
+      "Settings section",
+      sections.map(([name, label, key]) => ({
+        title: `${label} [${key}]`,
+        run: () => switchSection(name),
+      })),
+    );
+  }
   useKeyboard((event) => {
     if (!props.focused || props.ui.modal() || event.ctrl || event.meta) return;
     if (event.name === "1") switchSection("environment");
@@ -1163,58 +1187,107 @@ export function SettingsPanel(
   });
 
   return (
-    <box flexGrow={1} flexDirection="column" minHeight={0} onMouseDown={props.onFocus}>
-      <box padding={1} flexDirection="row" gap={3}>
-        <For
-          each={
-            [
-              ["environment", "Environment [1]"],
-              ["providers", "Providers [2]"],
-              ["connections", "Connections [3]"],
-            ] as const
-          }
-        >
-          {([name, label]) => (
-            <text
-              selectable={false}
-              fg={section() === name ? theme.primary : theme.textMuted}
-              onMouseDown={() => switchSection(name)}
+    <box
+      ref={(node) => {
+        panel = node;
+      }}
+      onSizeChange={() => setPanelWidth(panel?.width ?? 0)}
+      flexGrow={1}
+      minWidth={0}
+      flexDirection="column"
+      minHeight={0}
+      onMouseDown={props.onFocus}
+    >
+      <Show
+        when={compact()}
+        fallback={
+          <>
+            <box paddingX={1} flexDirection="row" gap={2} height={1} flexShrink={0}>
+              <For
+                each={
+                  [
+                    ["environment", "Environment [1]"],
+                    ["providers", "Providers [2]"],
+                    ["connections", "Connections [3]"],
+                  ] as const
+                }
+              >
+                {([name, label]) => (
+                  <text
+                    selectable={false}
+                    fg={section() === name ? theme.primary : theme.textMuted}
+                    onMouseDown={() => switchSection(name)}
+                  >
+                    {label}
+                  </text>
+                )}
+              </For>
+              <Show when={section() === "providers"}>
+                <Action label="Add [n]" onPress={addProvider} />
+              </Show>
+            </box>
+            <box
+              paddingX={1}
+              marginBottom={1}
+              flexDirection="row"
+              gap={2}
+              height={1}
+              flexShrink={0}
             >
-              {label}
-            </text>
-          )}
-        </For>
-        <Show when={section() === "providers"}>
-          <Action label="Add [n]" onPress={addProvider} />
-        </Show>
-      </box>
-      <box paddingX={1} paddingBottom={1} flexDirection="row" gap={2}>
-        <For
-          each={
-            [
-              ["usage", "Usage [4]"],
-              ["maintenance", "Maintenance [5]"],
-              ["access", "Access [6]"],
-              ["secrets", "Secrets [7]"],
-              ["terminal", "Terminal [8]"],
-            ] as const
-          }
-        >
-          {([name, label]) => (
-            <text
-              selectable={false}
-              fg={section() === name ? theme.primary : theme.textMuted}
-              onMouseDown={() => switchSection(name)}
-            >
-              {label}
-            </text>
-          )}
-        </For>
-      </box>
+              <For
+                each={
+                  [
+                    ["usage", "Usage [4]"],
+                    ["maintenance", "Maintenance [5]"],
+                    ["access", "Access [6]"],
+                    ["secrets", "Secrets [7]"],
+                    ["terminal", "Terminal [8]"],
+                  ] as const
+                }
+              >
+                {([name, label]) => (
+                  <text
+                    selectable={false}
+                    fg={section() === name ? theme.primary : theme.textMuted}
+                    onMouseDown={() => switchSection(name)}
+                  >
+                    {label}
+                  </text>
+                )}
+              </For>
+            </box>
+          </>
+        }
+      >
+        <box paddingX={1} marginBottom={1} height={1} flexShrink={0} flexDirection="row" gap={2}>
+          <text
+            selectable={false}
+            fg={theme.primary}
+            flexGrow={1}
+            minWidth={0}
+            truncate
+            onMouseDown={chooseSection}
+          >
+            {sections.find(([name]) => name === section())?.[1]} ▾
+          </text>
+          <Show when={section() === "providers"}>
+            <Action label="Add [n]" onPress={addProvider} />
+          </Show>
+          <text
+            selectable={false}
+            fg={theme.textMuted}
+            flexShrink={0}
+            onMouseDown={() => setPane(pane() === "list" ? "detail" : "list")}
+          >
+            {pane() === "list" ? "Details →" : "← List"}
+          </text>
+        </box>
+      </Show>
       <box flexGrow={1} flexDirection="row" minHeight={0}>
         <select
-          width="46%"
-          flexGrow={1}
+          visible={!compact() || pane() === "list"}
+          width={compact() ? "100%" : "46%"}
+          flexGrow={compact() ? 0 : 1}
           flexShrink={0}
           options={entries().map((entry) => ({
             name: `${entry.title}${entry.value ? `  ${entry.value}` : ""}`,
@@ -1233,9 +1306,10 @@ export function SettingsPanel(
           showScrollIndicator
         />
         <scrollbox
+          visible={!compact() || pane() === "detail"}
           flexGrow={1}
           minWidth={0}
-          paddingX={2}
+          paddingX={compact() ? 1 : 2}
           focused={props.focused && !props.ui.modal() && pane() === "detail"}
           onMouseDown={() => setPane("detail")}
         >
@@ -1391,8 +1465,12 @@ export function SettingsPanel(
           </Show>
         </scrollbox>
       </box>
-      <text fg={theme.textMuted} paddingX={1}>
-        ↑↓ select · enter change · → details · ← list · 1–8 sections
+      <text fg={theme.textMuted} paddingX={1} height={1} flexShrink={0} truncate>
+        {compact()
+          ? pane() === "list"
+            ? "↑↓ select · Enter change · → details · 1–8 sections"
+            : "← list · 1–8 sections"
+          : "↑↓ select · enter change · → details · ← list · 1–8 sections"}
       </text>
     </box>
   );

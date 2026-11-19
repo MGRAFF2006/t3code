@@ -30,10 +30,13 @@ export function Dialog(
         width={Math.max(1, Math.min(props.width ?? 80, dimensions().width - 2))}
         maxHeight={Math.max(1, dimensions().height - 2)}
         backgroundColor={theme.backgroundPanel}
-        padding={1}
+        paddingX={1}
+        paddingY={dimensions().height < 20 ? 0 : 1}
       >
-        <box flexDirection="row" justifyContent="space-between" marginBottom={1}>
-          <text fg={theme.text}>{props.title}</text>
+        <box flexDirection="row" gap={1} height={1} flexShrink={0} marginBottom={1}>
+          <text fg={theme.text} flexGrow={1} minWidth={0} truncate>
+            {props.title}
+          </text>
           <text selectable={false} fg={theme.textMuted} flexShrink={0} onMouseDown={props.onClose}>
             esc
           </text>

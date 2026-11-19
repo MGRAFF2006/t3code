@@ -1,4 +1,4 @@
-import { useKeyboard } from "@opentui/solid";
+import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { WS_METHODS } from "@t3tools/contracts";
 import { request, subscribe } from "../rpc/request.ts";
@@ -30,6 +30,7 @@ export function WorkspacePanel(
     compact?: boolean | undefined;
   },
 ) {
+  const dimensions = useTerminalDimensions();
   const [tab, setTab] = createSignal<WorkspaceTab>(props.initialTab ?? "changes");
   const [status, setStatus] = createSignal<WorkspaceStatus>({ local: null, remote: null });
   const [error, setError] = createSignal("");
@@ -108,17 +109,18 @@ export function WorkspacePanel(
     >
       <box
         flexDirection="row"
-        gap={2}
+        gap={1}
         paddingX={1}
-        paddingY={1}
+        height={1}
         flexShrink={0}
         backgroundColor={theme.backgroundPanel}
       >
         <Show
-          when={!props.compact}
+          when={!props.compact && dimensions().width >= 104}
           fallback={
             <text
               selectable={false}
+              flexShrink={0}
               fg={theme.primary}
               onMouseDown={() =>
                 props.ui.choose(
@@ -135,6 +137,7 @@ export function WorkspacePanel(
             {(entry) => (
               <text
                 selectable={false}
+                flexShrink={0}
                 fg={tab() === entry.id ? theme.primary : theme.textMuted}
                 onMouseDown={() => {
                   props.onFocus();
@@ -146,11 +149,12 @@ export function WorkspacePanel(
             )}
           </For>
         </Show>
-        <text fg={theme.textMuted} flexGrow={1} truncate>
+        <text height={1} fg={theme.textMuted} flexGrow={1} flexShrink={1} minWidth={0} truncate>
           {status().local?.refName ?? ""}
         </text>
         <text
           selectable={false}
+          flexShrink={0}
           fg={theme.textMuted}
           onMouseDown={() => void props.ui.run(refresh)}
         >

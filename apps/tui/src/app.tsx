@@ -222,6 +222,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   onCleanup(() => props.client?.setViewedThread(null));
   const cwd = () => thread()?.worktreePath ?? project()?.workspaceRoot;
   const showSidebar = () => sidebar() && dimensions().width >= 86;
+  const headerWidth = () => dimensions().width - (showSidebar() ? 29 : 0);
   const showWorkspace = () => workspace() && area() === "chat" && dimensions().width >= 132;
   const activeFocus = () =>
     (focus() === "workspace" && !showWorkspace()) || (focus() === "sidebar" && !showSidebar())
@@ -377,6 +378,21 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
         run: () => openArea(item.area),
       })),
     );
+  }
+  function headerActions() {
+    choose("Thread and workspace", [
+      { title: "Thread actions…", run: () => threadActions() },
+      { title: "Review changes", run: showChanges },
+      {
+        title: "Open Git and branches",
+        run: () => {
+          setWorkspaceTab("git");
+          openArea("workspace");
+        },
+      },
+      { title: "New thread…", run: () => newThread() },
+      { title: "Project actions…", run: currentProjectActions },
+    ]);
   }
   function toggleWorkspace() {
     if (dimensions().width < 132) {
@@ -1255,7 +1271,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
             paddingX={1}
             onMouseDown={() => setFocus("sidebar")}
           >
-            <box height={3} flexShrink={0} justifyContent="center">
+            <box height={2} flexShrink={0}>
               <text selectable={false} fg={theme.text} onMouseDown={environments}>
                 T3 Code ▾
               </text>
@@ -1270,7 +1286,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
             >
               {state()?.label ?? (props.demo ? "Demo" : "Connect environment")}
             </text>
-            <box height={1} flexShrink={0} marginTop={1} marginBottom={1}>
+            <box height={1} flexShrink={0} marginTop={1}>
               <text
                 selectable={false}
                 fg={theme.primary}
@@ -1279,13 +1295,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
                 {icon("add")} New thread ^N
               </text>
             </box>
-            <box
-              height={1}
-              flexShrink={0}
-              marginTop={1}
-              flexDirection="row"
-              justifyContent="space-between"
-            >
+            <box height={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
               <text fg={theme.text}>Threads</text>
               <text selectable={false} fg={theme.textMuted} onMouseDown={filterPicker}>
                 {filter()} ▾
@@ -1388,39 +1398,55 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
             </text>
           </box>
         </Show>
-        <box flexGrow={1} minWidth={0}>
+        <box width={headerWidth()} flexGrow={1} flexShrink={1} minWidth={0}>
           <box
-            height={3}
-            paddingX={2}
+            height={2}
+            flexShrink={0}
+            paddingX={1}
+            gap={1}
             flexDirection="row"
             alignItems="center"
             border={["bottom"]}
             borderColor={theme.border}
           >
             <Show when={!showSidebar()}>
-              <text selectable={false} fg={theme.primary} marginRight={2} onMouseDown={palette}>
+              <text
+                selectable={false}
+                height={1}
+                fg={theme.primary}
+                flexShrink={0}
+                onMouseDown={palette}
+              >
                 T3
               </text>
             </Show>
-            <text
-              selectable={false}
-              fg={theme.textMuted}
-              flexShrink={0}
-              onMouseDown={() => newThread()}
-            >
-              {project()?.title ?? "T3 Code"}
-              {" / "}
-            </text>
-            <text fg={theme.text} flexGrow={1} truncate>
+            <Show when={headerWidth() >= 100}>
+              <text
+                selectable={false}
+                fg={theme.textMuted}
+                height={1}
+                maxWidth={Math.min(26, Math.floor(headerWidth() / 4))}
+                flexShrink={0}
+                truncate
+                onMouseDown={() => newThread()}
+              >
+                {project()?.title ?? "T3 Code"}
+              </text>
+              <text fg={theme.textMuted}>/</text>
+            </Show>
+            {/* OpenTUI numeric sizing resets shrink, so flexShrink must follow height. */}
+            <text height={1} fg={theme.text} flexGrow={1} flexShrink={1} minWidth={0} truncate>
               {area() === "chat"
                 ? (thread()?.title ?? "New thread")
                 : destinations.find((entry) => entry.area === area())?.title}
             </text>
-            <Show when={thread()?.branch}>
+            <Show when={thread()?.branch && headerWidth() >= 75}>
               <text
                 selectable={false}
                 fg={theme.textMuted}
-                marginLeft={1}
+                height={1}
+                maxWidth={Math.min(20, Math.floor(headerWidth() / 5))}
+                flexShrink={1}
                 truncate
                 onMouseDown={() => {
                   setWorkspaceTab("git");
@@ -1430,23 +1456,24 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
                 {icon("git")} {thread()?.branch}
               </text>
             </Show>
-            <text
-              selectable={false}
-              fg={theme.textMuted}
-              marginLeft={2}
-              flexShrink={0}
-              onMouseDown={views}
-            >
+            <text selectable={false} fg={theme.textMuted} flexShrink={0} onMouseDown={views}>
               Views ▾
             </text>
-            <text selectable={false} fg={theme.textMuted} marginLeft={2} onMouseDown={showChanges}>
-              Changes
-            </text>
+            <Show when={headerWidth() >= 65}>
+              <text
+                selectable={false}
+                flexShrink={0}
+                fg={theme.textMuted}
+                onMouseDown={showChanges}
+              >
+                Changes
+              </text>
+            </Show>
             <text
               selectable={false}
               fg={theme.textMuted}
-              marginLeft={2}
-              onMouseDown={() => threadActions()}
+              flexShrink={0}
+              onMouseDown={() => (headerWidth() < 75 ? headerActions() : threadActions())}
             >
               •••
             </text>

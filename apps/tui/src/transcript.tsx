@@ -382,12 +382,13 @@ function Item(props: {
       return `You  ·  ${value.attachments.length} attachment${value.attachments.length === 1 ? "" : "s"}`;
     return label();
   };
+  // OpenTUI infers a full border from borderColor with false; an empty side list stays borderless.
   return (
     <box
       ref={(node) => props.rowRef?.(node)}
       paddingLeft={1}
       marginBottom={isMessage() || isPlan() ? 1 : 0}
-      border={isMessage() || isPlan() || props.highlighted ? ["left"] : false}
+      border={isMessage() || isPlan() || props.highlighted ? ["left"] : []}
       borderColor={
         item().type === "user_message" || props.highlighted
           ? theme.borderActive
@@ -403,7 +404,8 @@ function Item(props: {
     >
       <box
         flexDirection="row"
-        height={1}
+        flexWrap="wrap"
+        minHeight={1}
         onMouseOver={() => setHovered(true)}
         onMouseOut={(event) => {
           if (pointerLeftRow(event)) setHovered(false);
@@ -412,7 +414,10 @@ function Item(props: {
         <text
           selectable={false}
           flexGrow={1}
-          minWidth={0}
+          flexBasis={0}
+          minWidth={8}
+          height={1}
+          flexShrink={1}
           truncate
           fg={item().type === "error" ? theme.error : isMessage() ? theme.text : theme.textMuted}
           onMouseDown={
@@ -427,6 +432,7 @@ function Item(props: {
         <Show when={showBody() && !isMessage()}>
           <text
             selectable={false}
+            flexShrink={0}
             fg={theme.textMuted}
             onMouseDown={() => {
               props.onFocus?.();
@@ -440,6 +446,7 @@ function Item(props: {
         <Show when={props.onCopy && (isMessage() || showBody())}>
           <text
             selectable={false}
+            flexShrink={0}
             fg={theme.textMuted}
             onMouseDown={() => {
               props.onFocus?.();
@@ -451,7 +458,12 @@ function Item(props: {
           </text>
         </Show>
         <Show when={links().length && props.onOpenLinks}>
-          <text selectable={false} fg={theme.textMuted} onMouseDown={() => props.onOpenLinks?.()}>
+          <text
+            selectable={false}
+            flexShrink={0}
+            fg={theme.textMuted}
+            onMouseDown={() => props.onOpenLinks?.()}
+          >
             {" "}
             Links{" "}
           </text>
@@ -459,6 +471,7 @@ function Item(props: {
         <Show when={item().type === "file_change"}>
           <text
             selectable={false}
+            flexShrink={0}
             fg={theme.primary}
             onMouseDown={() => {
               const value = item();

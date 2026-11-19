@@ -37,7 +37,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     ),
   );
   const [offset, setOffset] = createSignal(0);
-  const limit = createMemo(() => Math.max(1, Math.min(18, dimensions().height - 10)));
+  const descriptionRows = () => (dimensions().height >= 24 ? 3 : 2);
   const filtered = createMemo(() => {
     const options = props.options.filter((option) => !option.disabled);
     const needle = filter().toLowerCase();
@@ -51,6 +51,17 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
       .map((result) => result.obj);
   });
   const active = createMemo(() => reconcileSelection(selected(), filtered().length));
+  const limit = createMemo(() =>
+    Math.max(
+      1,
+      Math.min(
+        18,
+        dimensions().height -
+          (dimensions().height < 20 ? 8 : 10) -
+          (filtered()[active()]?.description ? descriptionRows() + 1 : 0),
+      ),
+    ),
+  );
   const start = createMemo(() =>
     revealSelectionOffset(offset(), {
       count: filtered().length,
@@ -87,6 +98,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
   return (
     <Dialog title={props.title} onClose={props.onCancel}>
       <input
+        flexShrink={0}
         focused
         value={filter()}
         placeholder={props.placeholder ?? "Search…"}
@@ -101,7 +113,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
           setOffset(0);
         }}
       />
-      <box marginTop={1}>
+      <box marginTop={1} flexShrink={0}>
         <Show
           when={visible().length > 0}
           fallback={<text fg={theme.textMuted}>No matching items</text>}
@@ -110,19 +122,36 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
             {(option, index) => (
               <box
                 flexDirection="row"
+                height={1}
+                flexShrink={0}
+                gap={1}
                 backgroundColor={
                   start() + index() === active() ? theme.backgroundElement : theme.backgroundPanel
                 }
                 onMouseDown={() => props.onSelect(option)}
               >
-                <text selectable={false} fg={theme.primary} width={2} flexShrink={0}>
+                <text selectable={false} fg={theme.primary} width={1} flexShrink={0}>
                   {start() + index() === active() ? "┃" : " "}
                 </text>
-                <text selectable={false} fg={option.color ?? theme.text} flexGrow={1} truncate>
+                <text
+                  selectable={false}
+                  fg={option.color ?? theme.text}
+                  flexGrow={1}
+                  minWidth={0}
+                  truncate
+                >
                   {option.title}
                 </text>
                 <Show when={option.category}>
-                  <text selectable={false} fg={theme.textMuted} flexShrink={0}>
+                  <text
+                    selectable={false}
+                    fg={theme.textMuted}
+                    maxWidth={Math.max(
+                      1,
+                      Math.floor((Math.min(80, dimensions().width - 2) - 4) / 3),
+                    )}
+                    truncate
+                  >
                     {option.category}
                   </text>
                 </Show>
@@ -132,12 +161,16 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
         </Show>
       </box>
       <Show when={filtered()[active()]?.description}>
-        <text marginTop={1} fg={theme.textMuted} wrapMode="word">
-          {filtered()[active()]?.description}
-        </text>
+        <scrollbox marginTop={1} maxHeight={descriptionRows()} flexShrink={0}>
+          <text fg={theme.textMuted} wrapMode="word">
+            {filtered()[active()]?.description}
+          </text>
+        </scrollbox>
       </Show>
-      <text marginTop={1} fg={theme.textMuted}>
-        ↑↓ select · enter confirm · esc back · {filtered().length} items
+      <text marginTop={1} height={1} flexShrink={0} fg={theme.textMuted} truncate>
+        {dimensions().width < 60
+          ? `↑↓ · Enter · Esc · ${filtered().length} items`
+          : `↑↓ select · enter confirm · esc back · ${filtered().length} items`}
       </text>
     </Dialog>
   );
