@@ -1685,6 +1685,7 @@ function ThreadConversation(
           projection={props.projection()}
           hidePendingRequests
           wordWrap={preferences().wordWrap}
+          timestampFormat={preferences().timestampFormat}
           expandAll={expandWork()}
           highlightedEntryId={findResult()?.match?.entryId}
           onOpenItem={openItem}

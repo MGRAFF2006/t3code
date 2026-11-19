@@ -81,6 +81,17 @@ export function createTerminalSettings(props: FeatureProps) {
         ]),
     },
     {
+      title: "Time format",
+      value: preferences().timestampFormat,
+      description: "Hover over a message or tool-call header to see its local time.",
+      run: () =>
+        props.ui.choose("Time format", [
+          { title: "System locale", run: () => save({ timestampFormat: "locale" }) },
+          { title: "12-hour", run: () => save({ timestampFormat: "12-hour" }) },
+          { title: "24-hour", run: () => save({ timestampFormat: "24-hour" }) },
+        ]),
+    },
+    {
       title: "Follow-up messages",
       value: preferences().followUpMode === "queue" ? "Queue" : "Steer",
       description:
@@ -113,7 +124,7 @@ export function createTerminalSettings(props: FeatureProps) {
     {
       title: "Reset terminal preferences",
       description:
-        "Restore dark appearance, automatic icons, Enter to send, queued follow-ups, wrapping and unified diffs.",
+        "Restore dark appearance, automatic icons, system time format, Enter to send, queued follow-ups, wrapping and unified diffs.",
       run: () =>
         props.ui.confirm(
           "Reset terminal preferences",
@@ -122,6 +133,7 @@ export function createTerminalSettings(props: FeatureProps) {
             await props.client.updatePreferences({
               theme: "dark",
               icons: "auto",
+              timestampFormat: "locale",
               sendShortcut: "enter",
               followUpMode: "queue",
               wordWrap: true,

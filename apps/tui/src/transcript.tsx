@@ -11,6 +11,7 @@ import {
   type MarkdownRenderable,
   type Renderable,
   type SyntaxStyle,
+  type MouseEvent,
 } from "@opentui/core";
 import {
   toolCallLines,
@@ -18,6 +19,8 @@ import {
   turnItemOutputText,
 } from "@t3tools/client-runtime/work-log/item-detail";
 import { useRenderer } from "@opentui/solid";
+import * as DateTime from "effect/DateTime";
+import type { TimestampFormat } from "@t3tools/contracts/settings";
 import {
   createEffect,
   createMemo,
@@ -98,6 +101,40 @@ function previewToolText(text: string) {
   return preview.length < text.length
     ? `${preview}\nOpen item details for the full output.`
     : preview;
+}
+
+function RowTimestamp(props: {
+  item: OrchestrationV2TurnItem;
+  format: TimestampFormat | undefined;
+}) {
+  const label = () => {
+    const date = DateTime.toDateUtc(props.item.startedAt ?? props.item.updatedAt);
+    const time = new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+      ...(props.format && props.format !== "locale" ? { hour12: props.format === "12-hour" } : {}),
+    }).format(date);
+    const today = DateTime.toDateUtc(DateTime.nowUnsafe());
+    if (date.toDateString() === today.toDateString()) return time;
+    const day = [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, "0"),
+      String(date.getDate()).padStart(2, "0"),
+    ].join("-");
+    return `${day} ${time}`;
+  };
+  return <text selectable={false} flexShrink={0} fg={theme.textMuted}>{` ${label()} `}</text>;
+}
+
+function pointerLeftRow(event: MouseEvent) {
+  const row = event.currentTarget;
+  return (
+    !row ||
+    event.x < row.x ||
+    event.x >= row.x + row.width ||
+    event.y < row.y ||
+    event.y >= row.y + row.height
+  );
 }
 
 export function turnItemText(value: OrchestrationV2TurnItem, preview = false) {
@@ -205,6 +242,7 @@ function Item(props: {
   expanded: boolean;
   onToggle: () => void;
   highlighted?: boolean | undefined;
+  timestampFormat?: TimestampFormat | undefined;
   onOpenLinks?: (() => void) | undefined;
   cwd?: string | undefined;
   subscribeOutput?:
@@ -220,6 +258,7 @@ function Item(props: {
   onSecretRequest?: ((item: SecretRequestItem) => void) | undefined;
   onOpenOriginal?: (() => void) | undefined;
 }) {
+  const [hovered, setHovered] = createSignal(false);
   const visibility = () => props.visibility ?? "local";
   const secret = createMemo(() => (props.item.type === "secret_request" ? props.item : null));
   const secretDisplay = createMemo(() => {
@@ -362,10 +401,18 @@ function Item(props: {
             : theme.background
       }
     >
-      <box flexDirection="row" height={1}>
+      <box
+        flexDirection="row"
+        height={1}
+        onMouseOver={() => setHovered(true)}
+        onMouseOut={(event) => {
+          if (pointerLeftRow(event)) setHovered(false);
+        }}
+      >
         <text
           selectable={false}
           flexGrow={1}
+          minWidth={0}
           truncate
           fg={item().type === "error" ? theme.error : isMessage() ? theme.text : theme.textMuted}
           onMouseDown={
@@ -422,6 +469,9 @@ function Item(props: {
             {" "}
             Open file{" "}
           </text>
+        </Show>
+        <Show when={hovered()}>
+          <RowTimestamp item={item()} format={props.timestampFormat} />
         </Show>
       </box>
       <Show when={showBody() && content()}>
@@ -569,12 +619,14 @@ function WorkGroup(props: {
   row: TranscriptRow;
   grouped: boolean;
   expanded: boolean;
+  timestampFormat?: TimestampFormat | undefined;
   onToggle: () => void;
   onFocus?: (() => void) | undefined;
   rowRef?: ((entry: OrchestrationV2ProjectedTurnItem, node: Renderable) => void) | undefined;
   onLoadWork?: ((entry: OrchestrationV2ProjectedTurnItem) => Promise<void>) | undefined;
   renderItem: (entry: Accessor<OrchestrationV2ProjectedTurnItem>) => ReturnType<typeof Item>;
 }) {
+  const [hovered, setHovered] = createSignal(false);
   const summary = createMemo(() => summarizeTranscriptWork(props.row.entries));
   const entries = createMemo(
     () => new Map(props.row.entries.map((entry) => [transcriptItemKey(entry), entry])),
@@ -622,22 +674,36 @@ function WorkGroup(props: {
       }}
     >
       <Show when={props.grouped}>
-        <text
-          selectable={false}
-          paddingLeft={1}
+        <box
+          flexDirection="row"
           height={1}
-          truncate
-          fg={summary().hasFailure ? theme.warning : theme.textMuted}
-          onMouseDown={() => {
-            props.onFocus?.();
-            if (error()) {
-              requestedCursor = undefined;
-              setError(null);
-            } else props.onToggle();
+          onMouseOver={() => setHovered(true)}
+          onMouseOut={(event) => {
+            if (pointerLeftRow(event)) setHovered(false);
           }}
         >
-          {`${icon(props.expanded ? "collapse" : "expand")} ${summary().label}${summary().active ? ` · ${summary().active} running` : ""}${summary().hasFailure ? " · failed work" : ""}`}
-        </text>
+          <text
+            selectable={false}
+            paddingLeft={1}
+            height={1}
+            flexGrow={1}
+            minWidth={0}
+            truncate
+            fg={summary().hasFailure ? theme.warning : theme.textMuted}
+            onMouseDown={() => {
+              props.onFocus?.();
+              if (error()) {
+                requestedCursor = undefined;
+                setError(null);
+              } else props.onToggle();
+            }}
+          >
+            {`${icon(props.expanded ? "collapse" : "expand")} ${summary().label}${summary().active ? ` · ${summary().active} running` : ""}${summary().hasFailure ? " · failed work" : ""}`}
+          </text>
+          <Show when={hovered()}>
+            <RowTimestamp item={props.row.entries[0]!.item} format={props.timestampFormat} />
+          </Show>
+        </box>
       </Show>
       <Show when={!props.grouped || props.expanded}>
         <box paddingLeft={props.grouped ? 1 : 0}>
@@ -676,6 +742,7 @@ export function Transcript(props: {
   expandAll?: boolean;
   hidePendingRequests?: boolean;
   wordWrap?: boolean | undefined;
+  timestampFormat?: TimestampFormat | undefined;
   onOpenHtml?: ((html: string, title?: string) => void) | undefined;
   onPreviewAsset?: ((resource: AssetResource, label: string) => void) | undefined;
   loadAsset?: ((resource: AssetResource) => Promise<AssetBytes>) | undefined;
@@ -765,6 +832,7 @@ export function Transcript(props: {
               onOpenOriginal={() => props.onOpenThread?.(entry().sourceThreadId)}
               syntax={syntax}
               wordWrap={props.wordWrap}
+              timestampFormat={props.timestampFormat}
               onOpen={() => props.onOpenItem?.(entry())}
               onOpenFile={props.onOpenFile}
               onFocus={props.onFocus}
@@ -809,6 +877,7 @@ export function Transcript(props: {
                 row={row()}
                 grouped={isGroup()}
                 expanded={expanded()}
+                timestampFormat={props.timestampFormat}
                 onToggle={() => {
                   const close = expanded();
                   const keys = row().entries.map(transcriptItemKey);

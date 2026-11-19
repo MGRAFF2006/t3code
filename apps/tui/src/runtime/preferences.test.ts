@@ -22,11 +22,18 @@ describe("terminal preferences", () => {
           const credentialFile = NodePath.join(directory, "connections.json");
           const credentials = '{"version":1,"credentials":["test-credential"]}';
           yield* Effect.promise(() => NodeFSP.writeFile(credentialFile, credentials));
+          yield* Effect.promise(() =>
+            NodeFSP.writeFile(
+              NodePath.join(directory, "preferences.json"),
+              '{"version":1,"settings":{"theme":"dark"}}',
+            ),
+          );
           const first = yield* Effect.promise(() => createPreferences(directory));
+          expect(first.get().timestampFormat).toBe("locale");
           const second = yield* Effect.promise(() => createPreferences(directory));
           const changes: string[] = [];
           const unsubscribe = first.subscribe((preferences) => changes.push(preferences.theme));
-          yield* Effect.promise(() => first.update({ theme: "light" }));
+          yield* Effect.promise(() => first.update({ theme: "light", timestampFormat: "12-hour" }));
           yield* Effect.promise(() => second.update({ sendShortcut: "ctrl-s" }));
           yield* Effect.promise(() =>
             Promise.all([
@@ -43,6 +50,7 @@ describe("terminal preferences", () => {
             wordWrap: false,
             diffView: "split",
             followUpMode: "steer",
+            timestampFormat: "12-hour",
           });
           expect(changes).toEqual(["dark", "light", "light", "light"]);
           expect(yield* Effect.promise(() => NodeFSP.readFile(credentialFile, "utf8"))).toBe(

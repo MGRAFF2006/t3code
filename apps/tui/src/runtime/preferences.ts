@@ -3,6 +3,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { TimestampFormat } from "@t3tools/contracts/settings";
 import {
   preparePrivateDirectory,
   readPrivateFile,
@@ -10,6 +11,7 @@ import {
 } from "../connections/files.ts";
 
 const Preferences = Schema.Struct({
+  timestampFormat: TimestampFormat.pipe(Schema.withDecodingDefault(Effect.succeed("locale"))),
   icons: Schema.Literals(["auto", "nerd", "plain"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("auto")),
   ),
