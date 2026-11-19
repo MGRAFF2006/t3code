@@ -13,6 +13,7 @@ export type Area =
   | "browser";
 export interface Choice {
   title: string;
+  color?: string;
   description?: string | undefined;
   category?: string | undefined;
   run: () => void;

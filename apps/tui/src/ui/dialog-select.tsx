@@ -8,6 +8,7 @@ import { moveSelection, reconcileSelection, revealSelectionOffset } from "./sele
 
 export interface DialogSelectOption<T> {
   title: string;
+  color?: string;
   value: T;
   description?: string | undefined;
   category?: string | undefined;
@@ -117,7 +118,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                 <text fg={theme.primary} width={2} flexShrink={0}>
                   {start() + index() === active() ? "┃" : " "}
                 </text>
-                <text fg={theme.text} flexGrow={1} truncate>
+                <text fg={option.color ?? theme.text} flexGrow={1} truncate>
                   {option.title}
                 </text>
                 <Show when={option.category}>

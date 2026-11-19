@@ -32,6 +32,7 @@ import { request } from "./rpc/request.ts";
 import { setTheme, theme } from "./theme/index.ts";
 import { icon, setIconMode, type IconMode, type IconName } from "./presentation/icons.ts";
 import { selectableModels } from "./presentation/models.ts";
+import { threadStatus, threadStatusPresentation } from "./presentation/thread-status.ts";
 import { SecretForm } from "./forms.tsx";
 import { FieldForm } from "./ui/field-form.tsx";
 import { Dialog } from "./ui/dialog.tsx";
@@ -295,9 +296,19 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
       if (approved) props.onExit();
     });
   }
+  function visitThread(id: string, opened: boolean) {
+    return request(client(), ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
+      type: "thread.visit",
+      commandId: commandId(),
+      threadId: ThreadId.make(id),
+      visitedAt: DateTime.formatIso(DateTime.nowUnsafe()),
+      opened,
+    });
+  }
   function openThread(id: string) {
     if (id === state()?.selectedThreadId && area() === "chat") {
       setFocus("main");
+      void run(() => visitThread(id, false));
       return;
     }
     const destination = state()?.environmentId;
@@ -306,13 +317,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
       client().selectThread(id);
       setArea("chat");
       setFocus("main");
-      await request(client(), ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
-        type: "thread.visit",
-        commandId: commandId(),
-        threadId: ThreadId.make(id),
-        visitedAt: DateTime.formatIso(DateTime.nowUnsafe()),
-        opened: true,
-      });
+      await visitThread(id, true);
     });
   }
   function openArea(next: Area) {
@@ -978,13 +983,17 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   function switchThread() {
     choose(
       "Switch thread",
-      allThreads().map((entry) => ({
-        title: entry.title,
-        description: entry.latestVisibleMessage?.text,
-        category: state()?.shell?.projects.find((candidate) => candidate.id === entry.projectId)
-          ?.title,
-        run: () => openThread(entry.id),
-      })),
+      allThreads().map((entry) => {
+        const status = threadAppearance(entry);
+        return {
+          title: `${status.symbol} ${entry.title}`,
+          color: status.color,
+          description: entry.latestVisibleMessage?.text,
+          category: state()?.shell?.projects.find((candidate) => candidate.id === entry.projectId)
+            ?.title,
+          run: () => openThread(entry.id),
+        };
+      }),
     );
   }
   function palette() {
@@ -1084,7 +1093,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   function shortcuts() {
     ui.text(
       "Keyboard shortcuts",
-      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.",
+      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.\n\nThread colours and symbols:\nBlue ● Working\nAmber ! Needs you · ◇ Waiting on work · ◷ Usage limit\nGreen ✓ Done\nOrange ☀ Woken\nRed × Failed\nGrey · Idle · ■ Stopped\nPins appear separately at the right of each row.",
     );
   }
   function matches(entry: OrchestrationV2ThreadShell) {
@@ -1111,6 +1120,16 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
     if (snoozed) return false;
     if (filter() === "settled") return entry.settledOverride === "settled";
     return entry.settledOverride !== "settled";
+  }
+  function threadAppearance(entry: OrchestrationV2ThreadShell) {
+    snoozeRevision();
+    const id = environment();
+    return threadStatusPresentation(
+      threadStatus(
+        id ? presentThreadShell(id, entry) : null,
+        DateTime.formatIso(DateTime.nowUnsafe()),
+      ),
+    );
   }
   const rows = createMemo(() => {
     const presented = allThreads()
@@ -1250,11 +1269,14 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
               <For each={rows()}>
                 {(entry) => {
                   const selected = () => state()?.selectedThreadId === entry.id;
+                  const status = createMemo(() => threadAppearance(entry));
                   const cursor = () =>
                     activeFocus() === "sidebar" && rows()[selectedRow()]?.id === entry.id;
                   return (
                     <box
                       id={`thread-${entry.id}`}
+                      flexDirection="row"
+                      height={1}
                       backgroundColor={
                         selected() || cursor() ? theme.sidebarSelected : theme.sidebar
                       }
@@ -1263,28 +1285,17 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
                         else openThread(entry.id);
                       }}
                     >
-                      <text
-                        height={1}
-                        truncate
-                        fg={
-                          entry.pendingRuntimeRequest
-                            ? theme.warning
-                            : selected()
-                              ? theme.text
-                              : theme.textMuted
-                        }
-                      >
-                        {entry.pinnedAt
-                          ? `${icon("pin")} `
-                          : entry.pendingRuntimeRequest
-                            ? `${icon("warning")} `
-                            : entry.activeRunId
-                              ? `${icon("running")} `
-                              : entry.lastError
-                                ? `${icon("error")} `
-                                : "  "}
+                      <text width={2} flexShrink={0} fg={status().color}>
+                        {status().symbol}
+                      </text>
+                      <text flexGrow={1} minWidth={0} height={1} truncate fg={status().color}>
                         {entry.title}
                       </text>
+                      <Show when={entry.pinnedAt}>
+                        <text width={2} flexShrink={0} fg={theme.textMuted}>
+                          {` ${icon("pin")}`}
+                        </text>
+                      </Show>
                     </box>
                   );
                 }}
