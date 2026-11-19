@@ -66,6 +66,7 @@ export function Form(props: FormProps) {
         </scrollbox>
       </Show>
       <textarea
+        keyBindings={[{ name: "a", ctrl: true, action: "select-all" }]}
         ref={(element) => {
           input = element;
         }}

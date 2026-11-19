@@ -177,6 +177,7 @@ export function FieldForm(props: { options: FieldFormOptions; onClose: () => voi
                       }
                     >
                       <textarea
+                        keyBindings={[{ name: "a", ctrl: true, action: "select-all" }]}
                         ref={(element) => {
                           editor = element;
                         }}

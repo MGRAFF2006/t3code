@@ -55,6 +55,7 @@ export function FileEditor(props: {
   return (
     <box flexGrow={1} minHeight={0}>
       <textarea
+        keyBindings={[{ name: "a", ctrl: true, action: "select-all" }]}
         ref={(value) => {
           editor = value;
         }}

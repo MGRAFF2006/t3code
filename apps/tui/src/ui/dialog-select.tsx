@@ -110,6 +110,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
   return (
     <Dialog title={props.title} onClose={props.onCancel}>
       <input
+        keyBindings={[{ name: "a", ctrl: true, action: "select-all" }]}
         flexShrink={0}
         focused
         value={filter()}

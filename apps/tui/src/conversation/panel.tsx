@@ -1155,6 +1155,7 @@ function ThreadConversation(
     },
     { title: "/diff", description: "Review workspace changes", run: props.ui.showChanges },
     { title: "/queue", description: "Manage queued messages", run: queueActions },
+    { title: "/requests", description: "Focus approvals and questions", run: activateRequests },
     { title: "/work", description: "Inspect the work log", run: workLog },
     { title: "/find", description: "Find text in this conversation", run: findPrompt },
     { title: "/attach", description: "Attach a local image or file", run: attach },
@@ -1549,7 +1550,7 @@ function ThreadConversation(
       key.preventDefault();
       goBottom();
     }
-    if (key.ctrl && key.name === "a") {
+    if (key.ctrl && key.name === "a" && !composer?.focused) {
       key.preventDefault();
       activateRequests();
     }
@@ -1857,7 +1858,7 @@ function ThreadConversation(
           }}
         >
           {pendingCount() > 0
-            ? `${pendingCount()} request${pendingCount() === 1 ? "" : "s"} need your response · Ctrl+A`
+            ? `${pendingCount()} request${pendingCount() === 1 ? "" : "s"} need your response · /requests`
             : queue().activeRun
               ? `${provider()?.displayName ?? "Agent"} ${queue().activeRun?.status === "waiting" ? "finishing turn" : queue().activeRun?.status === "preparing" ? "preparing workspace" : "working"}…`
               : "Ready"}
@@ -1943,6 +1944,7 @@ function ThreadConversation(
             saveDraft();
           }}
           keyBindings={[
+            { name: "a", ctrl: true, action: "select-all" },
             {
               name: "return",
               action: preferences().sendShortcut === "enter" ? "submit" : "newline",

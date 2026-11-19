@@ -1148,7 +1148,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   function shortcuts() {
     ui.text(
       "Keyboard shortcuts",
-      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.\n\nThread colours and symbols:\nBlue ◌ Working\nPurple ? Needs input\nAmber △ Approval · ! Usage/budget limit\nPink @ Guest request\nGreen ✓ Done\nYellow ◷ Woken\nRed ! Failed · credentials/provider errors\nGrey ⊙ Waiting on related/background work\nNormal text: Ready/already seen (no status icon)\nPins appear separately at the right of each row.",
+      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nCtrl+A  Select all in the focused text box\n/requests  Focus approvals and questions\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.\n\nThread colours and symbols:\nBlue ◌ Working\nPurple ? Needs input\nAmber △ Approval · ! Usage/budget limit\nPink @ Guest request\nGreen ✓ Done\nYellow ◷ Woken\nRed ! Failed · credentials/provider errors\nGrey ⊙ Waiting on related/background work\nNormal text: Ready/already seen (no status icon)\nPins appear separately at the right of each row.",
     );
   }
   function matches(entry: OrchestrationV2ThreadShell) {
@@ -1303,6 +1303,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
               </text>
             </box>
             <input
+              keyBindings={[{ name: "a", ctrl: true, action: "select-all" }]}
               placeholder="Search threads…"
               value={search()}
               focused={activeFocus() === "sidebar" && !modal()}
