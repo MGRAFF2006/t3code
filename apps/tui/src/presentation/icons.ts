@@ -20,6 +20,8 @@ const glyphs = {
   warning: ["\uf071", "!"],
   running: ["\uf111", "●"],
   waiting: ["\uf252", "◇"],
+  input: ["\uf128", "?"],
+  request: ["\uf0e5", "@"],
   woken: ["\uf185", "☀"],
   limited: ["\uf017", "◷"],
   stopped: ["\uf04d", "■"],

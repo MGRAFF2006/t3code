@@ -5,13 +5,9 @@ import { theme } from "../theme/index.ts";
 
 export function threadStatus(thread: EnvironmentThreadShell | null, now: string) {
   if (!thread) return "idle";
-  if (
-    thread.hasPendingApprovals ||
-    thread.hasPendingUserInput ||
-    thread.pendingSubagentRequest ||
-    (thread.pendingGuestMessageCount ?? 0) > 0
-  )
-    return "attention";
+  if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") return "approval";
+  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") return "input";
+  if ((thread.pendingGuestMessageCount ?? 0) > 0) return "request";
   const runtime = thread.runtime;
   const wokeAt = threadWokeAt(thread, { now });
   const visitedAt = thread.lastVisitedAt ? Date.parse(thread.lastVisitedAt) : NaN;
@@ -46,12 +42,16 @@ export function threadStatusPresentation(status: ReturnType<typeof threadStatus>
   switch (status) {
     case "working":
       return { color: theme.statusWorking, symbol: icon("running") };
-    case "attention":
-      return { color: theme.statusWaiting, symbol: icon("warning") };
+    case "approval":
+      return { color: theme.statusApproval, symbol: icon("warning") };
+    case "input":
+      return { color: theme.statusInput, symbol: icon("input") };
+    case "request":
+      return { color: theme.statusRequest, symbol: icon("request") };
     case "waiting":
-      return { color: theme.statusWaiting, symbol: icon("waiting") };
+      return { color: theme.textMuted, symbol: icon("waiting") };
     case "limited":
-      return { color: theme.statusWaiting, symbol: icon("limited") };
+      return { color: theme.statusApproval, symbol: icon("limited") };
     case "failed":
       return { color: theme.statusFailed, symbol: icon("error") };
     case "done":

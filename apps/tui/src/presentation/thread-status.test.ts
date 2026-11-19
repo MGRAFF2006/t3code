@@ -72,13 +72,22 @@ it.each([
       status: "running" as const,
       pendingRuntimeRequest: { id: RuntimeRequestId.make("request"), kind, createdAt: v2Now },
     },
-    expected: kind === "auth_refresh" ? "working" : "attention",
+    expected: kind === "auth_refresh" ? "working" : kind === "user_input" ? "input" : "approval",
   })),
   {
     name: "guest request after completion",
     changes: { status: "completed", pendingGuestMessageCount: 1 },
-    expected: "attention",
+    expected: "request",
   },
+  ...(["command", "user_input"] as const).map((kind) => ({
+    name: `${kind} before guest request`,
+    changes: {
+      status: "running" as const,
+      pendingRuntimeRequest: { id: RuntimeRequestId.make("request"), kind, createdAt: v2Now },
+      pendingGuestMessageCount: 1,
+    },
+    expected: kind === "user_input" ? "input" : "approval",
+  })),
   ...(
     [
       { name: "unseen snooze wake", changes: {}, expected: "woken" },

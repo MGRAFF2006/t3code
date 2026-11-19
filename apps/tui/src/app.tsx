@@ -1093,7 +1093,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   function shortcuts() {
     ui.text(
       "Keyboard shortcuts",
-      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.\n\nThread colours and symbols:\nBlue ● Working\nAmber ! Needs you · ◇ Waiting on work · ◷ Usage limit\nGreen ✓ Done\nOrange ☀ Woken\nRed × Failed\nGrey · Idle · ■ Stopped\nPins appear separately at the right of each row.",
+      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.\n\nThread colours and symbols:\nBlue ● Working\nPurple ? Needs input\nAmber ! Approval · ◷ Usage limit\nPink @ Guest request\nGreen ✓ Done\nOrange ☀ Woken\nRed × Failed\nGrey ◇ Waiting on work · · Idle · ■ Stopped\nPins appear separately at the right of each row.",
     );
   }
   function matches(entry: OrchestrationV2ThreadShell) {
