@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "./ui/scroll.ts";
 import type { TextareaRenderable } from "@opentui/core";
 import { useKeyboard, usePaste, useTerminalDimensions } from "@opentui/solid";
 import { createSignal, Show } from "solid-js";
@@ -55,7 +56,10 @@ export function Form(props: FormProps) {
       }}
     >
       <Show when={props.description}>
-        <scrollbox maxHeight={Math.max(2, Math.min(8, dimensions().height - 14))}>
+        <scrollbox
+          scrollbarOptions={scrollbarOptions()}
+          maxHeight={Math.max(2, Math.min(8, dimensions().height - 14))}
+        >
           <text fg={theme.textMuted} wrapMode="word">
             {props.description}
           </text>

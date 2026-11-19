@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "../ui/scroll.ts";
 import {
   DeviceActionInput,
   DeviceAppearance,
@@ -467,7 +468,7 @@ export function DevicesPanel(props: FeatureProps & { visible: boolean }) {
       <text fg={theme.textMuted} wrapMode="word">
         {state()?.hostStatusDetail ?? state()?.hostStatus ?? "Loading devices…"}
       </text>
-      <scrollbox flexGrow={1} minHeight={0}>
+      <scrollbox scrollbarOptions={scrollbarOptions()} flexGrow={1} minHeight={0}>
         <For each={devices()}>
           {(device, index) => (
             <box

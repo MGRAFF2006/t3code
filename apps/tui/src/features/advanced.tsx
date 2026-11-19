@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "../ui/scroll.ts";
 import { useKeyboard } from "@opentui/solid";
 import { createSignal, onCleanup } from "solid-js";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -139,7 +140,7 @@ export function AdvancedPanel(props: FeatureProps) {
       >
         Stop subscription
       </text>
-      <scrollbox flexGrow={1} minHeight={0}>
+      <scrollbox scrollbarOptions={scrollbarOptions()} flexGrow={1} minHeight={0}>
         <text fg={theme.text} wrapMode="word">
           {output()}
         </text>

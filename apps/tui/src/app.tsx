@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "./ui/scroll.ts";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import {
   onFocus as onTerminalFocus,
@@ -1315,6 +1316,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
               cursorColor={theme.primary}
             />
             <scrollbox
+              scrollbarOptions={scrollbarOptions()}
               ref={(element) => {
                 sidebarScroll = element;
               }}
@@ -1705,6 +1707,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
           return (
             <Dialog title={current.title} width={110} onClose={close}>
               <scrollbox
+                scrollbarOptions={scrollbarOptions()}
                 ref={(element) => {
                   outputScroll = element;
                 }}

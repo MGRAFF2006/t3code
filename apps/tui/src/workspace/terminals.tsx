@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "../ui/scroll.ts";
 import { WS_METHODS, type TerminalSummary } from "@t3tools/contracts";
 import { applyTerminalMetadataStreamEvent } from "@t3tools/client-runtime/state/terminal";
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
@@ -163,7 +164,7 @@ export function TerminalsPanel(props: WorkspaceContext & { visible: boolean }) {
           {failure()}
         </text>
       </Show>
-      <scrollbox flexGrow={1} minHeight={0}>
+      <scrollbox scrollbarOptions={scrollbarOptions()} flexGrow={1} minHeight={0}>
         <For each={terminals()}>
           {(value, index) => (
             <box

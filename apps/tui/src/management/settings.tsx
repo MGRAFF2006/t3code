@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "../ui/scroll.ts";
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import type { Renderable } from "@opentui/core";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
@@ -1306,6 +1307,7 @@ export function SettingsPanel(
           showScrollIndicator
         />
         <scrollbox
+          scrollbarOptions={scrollbarOptions()}
           visible={!compact() || pane() === "detail"}
           flexGrow={1}
           minWidth={0}

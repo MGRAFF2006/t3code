@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "../ui/scroll.ts";
 import { useKeyboard, useRenderer } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import {
@@ -490,7 +491,7 @@ export function BrowserPanel(props: FeatureProps) {
             Retry
           </text>
         </Show>
-        <scrollbox flexGrow={1} minHeight={0} scrollY>
+        <scrollbox scrollbarOptions={scrollbarOptions()} flexGrow={1} minHeight={0} scrollY>
           <Show
             when={!loading() || sessions().length > 0}
             fallback={<text fg={theme.textMuted}>Loading browser tabs…</text>}

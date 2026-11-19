@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "./scroll.ts";
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import * as fuzzysort from "fuzzysort";
@@ -70,6 +71,17 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     }),
   );
   const visible = createMemo(() => filtered().slice(start(), start() + limit()));
+  const range = (brief = false) => {
+    const count = filtered().length;
+    const end = start() + visible().length;
+    if (visible().length === count) return `${count} item${count === 1 ? "" : "s"}`;
+    if (brief)
+      return `${start() > 0 ? "↑ " : ""}${start() + 1}–${end}/${count}${end < count ? " ↓" : ""}`;
+    const more = [start() > 0 ? `↑${start()}` : "", end < count ? `↓${count - end}` : ""]
+      .filter(Boolean)
+      .join(" ");
+    return `${start() + 1}–${end}/${count} · ${more} more`;
+  };
 
   function move(delta: number) {
     setOffset(start());
@@ -161,16 +173,21 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
         </Show>
       </box>
       <Show when={filtered()[active()]?.description}>
-        <scrollbox marginTop={1} maxHeight={descriptionRows()} flexShrink={0}>
+        <scrollbox
+          scrollbarOptions={scrollbarOptions()}
+          marginTop={1}
+          maxHeight={descriptionRows()}
+          flexShrink={0}
+        >
           <text fg={theme.textMuted} wrapMode="word">
             {filtered()[active()]?.description}
           </text>
         </scrollbox>
       </Show>
       <text marginTop={1} height={1} flexShrink={0} fg={theme.textMuted} truncate>
-        {dimensions().width < 60
-          ? `↑↓ · Enter · Esc · ${filtered().length} items`
-          : `↑↓ select · enter confirm · esc back · ${filtered().length} items`}
+        {dimensions().width < 80
+          ? `${range(dimensions().width < 60)} · Enter · Esc`
+          : `↑↓ select · enter confirm · esc back · ${range()}`}
       </text>
     </Dialog>
   );

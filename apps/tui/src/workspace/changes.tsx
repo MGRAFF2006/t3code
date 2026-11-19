@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "../ui/scroll.ts";
 import { DiffRenderable, pathToFiletype, type ScrollBoxRenderable } from "@opentui/core";
 import { extend, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createMemo, createResource, createSignal, For, onCleanup, Show } from "solid-js";
@@ -325,6 +326,7 @@ export function ChangesPanel(
       <box flexDirection={props.compact ? "column" : "row"} flexGrow={1} minHeight={0}>
         <Show when={!props.compact || !reviewing()}>
           <scrollbox
+            scrollbarOptions={scrollbarOptions()}
             ref={(value) => {
               fileScroll = value;
             }}
@@ -387,6 +389,7 @@ export function ChangesPanel(
               </text>
             </Show>
             <scrollbox
+              scrollbarOptions={scrollbarOptions()}
               ref={(value) => {
                 diffScroll = value;
               }}

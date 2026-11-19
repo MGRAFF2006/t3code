@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "../ui/scroll.ts";
 import { useKeyboard } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import {
@@ -666,6 +667,7 @@ export function IssuesPanel(props: FeatureProps) {
             showScrollIndicator
           />
           <scrollbox
+            scrollbarOptions={scrollbarOptions()}
             flexGrow={2}
             minWidth={0}
             paddingX={2}

@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "./scroll.ts";
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 import { useKeyboard, usePaste, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createSignal, For, Show } from "solid-js";
@@ -119,13 +120,19 @@ export function FieldForm(props: { options: FieldFormOptions; onClose: () => voi
   return (
     <Dialog title={props.options.title} width={88} onClose={() => !busy() && props.onClose()}>
       <Show when={props.options.description}>
-        <scrollbox maxHeight={descriptionRows()} flexShrink={0} marginBottom={1}>
+        <scrollbox
+          scrollbarOptions={scrollbarOptions()}
+          maxHeight={descriptionRows()}
+          flexShrink={0}
+          marginBottom={1}
+        >
           <text fg={theme.textMuted} wrapMode="word">
             {props.options.description}
           </text>
         </scrollbox>
       </Show>
       <scrollbox
+        scrollbarOptions={scrollbarOptions()}
         ref={(element) => {
           fields = element;
         }}
@@ -207,7 +214,7 @@ export function FieldForm(props: { options: FieldFormOptions; onClose: () => voi
         </For>
       </scrollbox>
       <Show when={error()}>
-        <scrollbox maxHeight={2} flexShrink={0}>
+        <scrollbox scrollbarOptions={scrollbarOptions()} maxHeight={2} flexShrink={0}>
           <text fg={theme.error} wrapMode="word">
             {error()}
           </text>

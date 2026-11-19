@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "../ui/scroll.ts";
 import { pathToFiletype, type ScrollBoxRenderable } from "@opentui/core";
 import { useRenderer } from "@opentui/solid";
 import {
@@ -631,6 +632,7 @@ export function FilesPanel(
       <box flexGrow={1} minHeight={0} flexDirection={props.compact ? "column" : "row"}>
         <Show when={!props.compact || !preview()}>
           <scrollbox
+            scrollbarOptions={scrollbarOptions()}
             ref={(value) => {
               treeScroll = value;
             }}
@@ -714,6 +716,7 @@ export function FilesPanel(
                     when={current().editing}
                     fallback={
                       <scrollbox
+                        scrollbarOptions={scrollbarOptions()}
                         ref={(value) => {
                           codeScroll = value;
                         }}

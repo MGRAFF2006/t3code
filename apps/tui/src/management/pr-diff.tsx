@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "../ui/scroll.ts";
 import { DiffRenderable, pathToFiletype } from "@opentui/core";
 import { extend, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, onCleanup, Show } from "solid-js";
@@ -343,6 +344,7 @@ export function PullRequestDiffPanel(
           showScrollIndicator
         />
         <scrollbox
+          scrollbarOptions={scrollbarOptions()}
           flexGrow={2}
           minWidth={0}
           scrollX

@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "../ui/scroll.ts";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import {
@@ -621,6 +622,7 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
               <text fg={theme.textMuted}>Working tree clean.</text>
             </Show>
             <scrollbox
+              scrollbarOptions={scrollbarOptions()}
               ref={(value) => {
                 scroll = value;
               }}

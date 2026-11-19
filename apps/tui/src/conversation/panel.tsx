@@ -1,3 +1,4 @@
+import { scrollbarOptions } from "../ui/scroll.ts";
 import type { Renderable, ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
@@ -1644,6 +1645,7 @@ function ThreadConversation(
       </Show>
       <StatusBanners />
       <scrollbox
+        scrollbarOptions={scrollbarOptions()}
         ref={(node) => {
           history = node;
           node.verticalScrollBar.on("change", () =>
