@@ -413,6 +413,7 @@ export function RequestCards(
                   </text>
                 </Show>
                 <text
+                  selectable={false}
                   fg={
                     props.active &&
                     allActions()[cursor() % Math.max(1, allActions().length)]?.key === action.key

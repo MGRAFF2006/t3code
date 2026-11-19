@@ -115,14 +115,14 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                 }
                 onMouseDown={() => props.onSelect(option)}
               >
-                <text fg={theme.primary} width={2} flexShrink={0}>
+                <text selectable={false} fg={theme.primary} width={2} flexShrink={0}>
                   {start() + index() === active() ? "┃" : " "}
                 </text>
-                <text fg={option.color ?? theme.text} flexGrow={1} truncate>
+                <text selectable={false} fg={option.color ?? theme.text} flexGrow={1} truncate>
                   {option.title}
                 </text>
                 <Show when={option.category}>
-                  <text fg={theme.textMuted} flexShrink={0}>
+                  <text selectable={false} fg={theme.textMuted} flexShrink={0}>
                     {option.category}
                   </text>
                 </Show>

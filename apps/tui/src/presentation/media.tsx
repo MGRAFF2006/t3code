@@ -42,6 +42,7 @@ export function NativeImagePreview(props: {
                     : "This image could not be loaded.")}
               </text>
               <text
+                selectable={false}
                 fg={theme.primary}
                 onMouseDown={() => {
                   setFailure(null);

@@ -284,18 +284,26 @@ export function ChangesPanel(
   return (
     <box visible={props.visible} flexGrow={1} minHeight={0} onMouseDown={props.onFocus}>
       <box flexDirection="row" gap={2} height={1} flexShrink={0} paddingX={1}>
-        <text fg={theme.primary} onMouseDown={chooseScope}>
+        <text selectable={false} fg={theme.primary} onMouseDown={chooseScope}>
           {scope() === "working-tree"
             ? "Uncommitted ▾"
             : scope() === "commit"
               ? `Commit ${commit().slice(0, 7)} ▾`
               : "Branch changes ▾"}
         </text>
-        <text fg={theme.textMuted} onMouseDown={chooseFile}>{`${files().length} files`}</text>
-        <text fg={theme.textMuted} onMouseDown={() => toggleSplit()}>
+        <text
+          selectable={false}
+          fg={theme.textMuted}
+          onMouseDown={chooseFile}
+        >{`${files().length} files`}</text>
+        <text selectable={false} fg={theme.textMuted} onMouseDown={() => toggleSplit()}>
           {split() ? "Split" : "Unified"}
         </text>
-        <text fg={theme.textMuted} onMouseDown={() => void props.ui.run(fileVersions)}>
+        <text
+          selectable={false}
+          fg={theme.textMuted}
+          onMouseDown={() => void props.ui.run(fileVersions)}
+        >
           Versions
         </text>
       </box>
@@ -341,10 +349,11 @@ export function ChangesPanel(
                     setReviewing(true);
                   }}
                 >
-                  <text fg={theme.text} truncate>
+                  <text selectable={false} fg={theme.text} truncate>
                     {file.path}
                   </text>
                   <text
+                    selectable={false}
                     fg={theme.textMuted}
                   >{`+${file.additions} −${file.deletions}${file.changeType === "new" ? "  new" : file.changeType === "deleted" ? "  deleted" : ""}`}</text>
                 </box>
@@ -357,6 +366,7 @@ export function ChangesPanel(
             <Show when={currentFile()}>
               {(file) => (
                 <text
+                  selectable={false}
                   fg={theme.textMuted}
                   truncate
                   onMouseDown={openCurrentFile}

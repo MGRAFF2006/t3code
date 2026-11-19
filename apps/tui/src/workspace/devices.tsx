@@ -449,13 +449,13 @@ export function DevicesPanel(props: FeatureProps & { visible: boolean }) {
         <text fg={theme.text} flexGrow={1}>
           Devices
         </text>
-        <text fg={theme.textMuted} onMouseDown={hosts}>
+        <text selectable={false} fg={theme.textMuted} onMouseDown={hosts}>
           Hosts
         </text>
-        <text fg={theme.textMuted} onMouseDown={tools}>
+        <text selectable={false} fg={theme.textMuted} onMouseDown={tools}>
           Tools
         </text>
-        <text fg={theme.primary} onMouseDown={settings}>
+        <text selectable={false} fg={theme.primary} onMouseDown={settings}>
           Settings
         </text>
       </box>
@@ -479,12 +479,14 @@ export function DevicesPanel(props: FeatureProps & { visible: boolean }) {
                 actions(device);
               }}
             >
-              <text fg={theme.text}>{device.name}</text>
-              <text fg={theme.textMuted}>
+              <text selectable={false} fg={theme.text}>
+                {device.name}
+              </text>
+              <text selectable={false} fg={theme.textMuted}>
                 {device.platform} {device.version} · {device.booted ? "Running" : "Stopped"}
                 {device.physical ? " · Physical device" : ""}
               </text>
-              <text fg={theme.textMuted}>
+              <text selectable={false} fg={theme.textMuted}>
                 {state()?.hosts.find((host) => host.id === device.hostId)?.label ?? device.hostId}
               </text>
             </box>

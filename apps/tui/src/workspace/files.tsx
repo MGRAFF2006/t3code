@@ -605,25 +605,25 @@ export function FilesPanel(
   return (
     <box visible={props.visible} flexGrow={1} minHeight={0} onMouseDown={props.onFocus}>
       <box flexDirection="row" gap={2} paddingX={1} height={1} flexShrink={0}>
-        <text fg={theme.primary} onMouseDown={() => search()}>
+        <text selectable={false} fg={theme.primary} onMouseDown={() => search()}>
           Find file
         </text>
-        <text fg={theme.textMuted} onMouseDown={() => search(true)}>
+        <text selectable={false} fg={theme.textMuted} onMouseDown={() => search(true)}>
           Search text
         </text>
-        <text fg={theme.textMuted} onMouseDown={fileActions}>
+        <text selectable={false} fg={theme.textMuted} onMouseDown={fileActions}>
           Actions ▾
         </text>
         <Show when={opened() && !opened()?.editing}>
-          <text fg={theme.primary} onMouseDown={edit}>
+          <text selectable={false} fg={theme.primary} onMouseDown={edit}>
             Edit
           </text>
         </Show>
         <Show when={opened()?.editing}>
-          <text fg={theme.primary} onMouseDown={() => void props.ui.run(save)}>
+          <text selectable={false} fg={theme.primary} onMouseDown={() => void props.ui.run(save)}>
             {saving() ? "Saving…" : "Save"}
           </text>
-          <text fg={theme.textMuted} onMouseDown={leaveEditor}>
+          <text selectable={false} fg={theme.textMuted} onMouseDown={leaveEditor}>
             Cancel
           </text>
         </Show>
@@ -655,6 +655,7 @@ export function FilesPanel(
             <For each={rows()}>
               {({ entry, depth }, index) => (
                 <text
+                  selectable={false}
                   id={`workspace-file-${entry.path}`}
                   height={1}
                   truncate

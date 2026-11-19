@@ -140,7 +140,7 @@ export function FieldForm(props: { options: FieldFormOptions; onClose: () => voi
                 setActive(index());
               }}
             >
-              <text fg={active() === index() ? theme.primary : theme.text}>
+              <text selectable={false} fg={active() === index() ? theme.primary : theme.text}>
                 {active() === index() ? "› " : "  "}
                 {field.label}
                 {field.required ? " *" : ""}
@@ -157,7 +157,7 @@ export function FieldForm(props: { options: FieldFormOptions; onClose: () => voi
                   <Show
                     when={active() === index() && field.type !== "secret"}
                     fallback={
-                      <text fg={theme.textMuted} truncate>
+                      <text selectable={false} fg={theme.textMuted} truncate>
                         {" "}
                         {field.type === "secret"
                           ? "•".repeat((values()[field.name] ?? "").length)
@@ -181,7 +181,7 @@ export function FieldForm(props: { options: FieldFormOptions; onClose: () => voi
                   </Show>
                 }
               >
-                <text fg={theme.text}>
+                <text selectable={false} fg={theme.text}>
                   {"  ‹ "}
                   {field.type === "toggle"
                     ? values()[field.name] === "true"
@@ -201,7 +201,7 @@ export function FieldForm(props: { options: FieldFormOptions; onClose: () => voi
           {error()}
         </text>
       </Show>
-      <text fg={theme.primary} marginTop={1} onMouseDown={() => void submit()}>
+      <text selectable={false} fg={theme.primary} marginTop={1} onMouseDown={() => void submit()}>
         {busy() ? "Working…" : (props.options.submitLabel ?? "Save")}
       </text>
       <text fg={theme.textMuted}>tab next field · ←→ choose · ctrl+s / F2 save · esc cancel</text>

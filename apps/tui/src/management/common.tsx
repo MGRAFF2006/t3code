@@ -43,7 +43,11 @@ export function createProjectScope(props: FeatureProps) {
 
 export function Action(props: { label: string; onPress: () => void; muted?: boolean }) {
   return (
-    <text fg={props.muted ? theme.textMuted : theme.primary} onMouseDown={props.onPress}>
+    <text
+      selectable={false}
+      fg={props.muted ? theme.textMuted : theme.primary}
+      onMouseDown={props.onPress}
+    >
       {props.label}
     </text>
   );
@@ -69,11 +73,15 @@ export function SettingRow(props: {
   return (
     <box flexDirection="column" marginBottom={1} onMouseDown={props.onPress}>
       <box flexDirection="row" justifyContent="space-between" gap={2}>
-        <text fg={theme.text}>{props.label}</text>
-        <text fg={theme.primary}>{props.value}</text>
+        <text selectable={false} fg={theme.text}>
+          {props.label}
+        </text>
+        <text selectable={false} fg={theme.primary}>
+          {props.value}
+        </text>
       </box>
       {props.description ? (
-        <text fg={theme.textMuted} wrapMode="word">
+        <text selectable={false} fg={theme.textMuted} wrapMode="word">
           {props.description}
         </text>
       ) : null}

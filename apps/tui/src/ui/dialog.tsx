@@ -34,7 +34,7 @@ export function Dialog(
       >
         <box flexDirection="row" justifyContent="space-between" marginBottom={1}>
           <text fg={theme.text}>{props.title}</text>
-          <text fg={theme.textMuted} flexShrink={0} onMouseDown={props.onClose}>
+          <text selectable={false} fg={theme.textMuted} flexShrink={0} onMouseDown={props.onClose}>
             esc
           </text>
         </box>

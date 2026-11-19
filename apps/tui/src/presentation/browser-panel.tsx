@@ -462,13 +462,13 @@ export function BrowserPanel(props: FeatureProps) {
         <text fg={theme.text} flexGrow={1}>
           Browser
         </text>
-        <text fg={theme.textMuted} onMouseDown={profileActions}>
+        <text selectable={false} fg={theme.textMuted} onMouseDown={profileActions}>
           Profiles
         </text>
-        <text fg={theme.textMuted} onMouseDown={developmentServers}>
+        <text selectable={false} fg={theme.textMuted} onMouseDown={developmentServers}>
           Servers
         </text>
-        <text fg={theme.primary} onMouseDown={() => newTab()}>
+        <text selectable={false} fg={theme.primary} onMouseDown={() => newTab()}>
           New tab [N]
         </text>
       </box>
@@ -481,6 +481,7 @@ export function BrowserPanel(props: FeatureProps) {
             {failure()}
           </text>
           <text
+            selectable={false}
             fg={theme.primary}
             onMouseDown={() => {
               void refresh();
@@ -521,10 +522,11 @@ export function BrowserPanel(props: FeatureProps) {
                     }}
                   >
                     <text
+                      selectable={false}
                       fg={selected() === index() ? theme.primary : theme.text}
                     >{`${selected() === index() ? "› " : ""}${value.navStatus._tag === "Idle" ? "New tab" : value.navStatus.title || value.navStatus.url}`}</text>
                     <Show when={value.navStatus._tag !== "Idle"}>
-                      <text fg={theme.textMuted} truncate>
+                      <text selectable={false} fg={theme.textMuted} truncate>
                         <Show
                           when={terminalHyperlink(
                             value.navStatus._tag !== "Idle" ? value.navStatus.url : "",
@@ -541,6 +543,7 @@ export function BrowserPanel(props: FeatureProps) {
                       </text>
                     </Show>
                     <text
+                      selectable={false}
                       fg={value.navStatus._tag === "LoadFailed" ? theme.error : theme.textMuted}
                     >
                       {value.navStatus._tag === "LoadFailed"
@@ -560,6 +563,7 @@ export function BrowserPanel(props: FeatureProps) {
               <For each={servers()}>
                 {(server) => (
                   <text
+                    selectable={false}
                     fg={theme.primary}
                     onMouseDown={() => serverActions(server)}
                   >{`${server.url}${server.processName ? ` · ${server.processName}` : ""}`}</text>

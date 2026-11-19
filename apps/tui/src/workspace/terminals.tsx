@@ -150,7 +150,11 @@ export function TerminalsPanel(props: WorkspaceContext & { visible: boolean }) {
         <text fg={theme.text} flexGrow={1}>
           Terminals
         </text>
-        <text fg={theme.primary} onMouseDown={() => void props.ui.run(async () => create())}>
+        <text
+          selectable={false}
+          fg={theme.primary}
+          onMouseDown={() => void props.ui.run(async () => create())}
+        >
           New [N]
         </text>
       </box>
@@ -171,12 +175,14 @@ export function TerminalsPanel(props: WorkspaceContext & { visible: boolean }) {
                 actions(value);
               }}
             >
-              <text fg={theme.text}>{value.label || value.terminalId}</text>
-              <text fg={theme.textMuted}>
+              <text selectable={false} fg={theme.text}>
+                {value.label || value.terminalId}
+              </text>
+              <text selectable={false} fg={theme.textMuted}>
                 {value.status}
                 {value.hasRunningSubprocess ? " · Command running" : ""}
               </text>
-              <text fg={theme.textMuted} truncate>
+              <text selectable={false} fg={theme.textMuted} truncate>
                 {value.cwd}
               </text>
             </box>

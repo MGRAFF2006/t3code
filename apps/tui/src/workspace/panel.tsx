@@ -118,6 +118,7 @@ export function WorkspacePanel(
           when={!props.compact}
           fallback={
             <text
+              selectable={false}
               fg={theme.primary}
               onMouseDown={() =>
                 props.ui.choose(
@@ -133,6 +134,7 @@ export function WorkspacePanel(
           <For each={tabs}>
             {(entry) => (
               <text
+                selectable={false}
                 fg={tab() === entry.id ? theme.primary : theme.textMuted}
                 onMouseDown={() => {
                   props.onFocus();
@@ -147,7 +149,11 @@ export function WorkspacePanel(
         <text fg={theme.textMuted} flexGrow={1} truncate>
           {status().local?.refName ?? ""}
         </text>
-        <text fg={theme.textMuted} onMouseDown={() => void props.ui.run(refresh)}>
+        <text
+          selectable={false}
+          fg={theme.textMuted}
+          onMouseDown={() => void props.ui.run(refresh)}
+        >
           ↻
         </text>
       </box>

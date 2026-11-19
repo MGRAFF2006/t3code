@@ -73,6 +73,7 @@ export function NotebookPreview(props: {
                     }
                   >
                     <text
+                      selectable={false}
                       fg={theme.primary}
                       onMouseDown={props.toggleImages}
                     >{`${props.images ? "Hide" : "Show"} cached output images`}</text>

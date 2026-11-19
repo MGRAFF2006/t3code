@@ -1216,11 +1216,12 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
             onMouseDown={() => setFocus("sidebar")}
           >
             <box height={3} flexShrink={0} justifyContent="center">
-              <text fg={theme.text} onMouseDown={environments}>
+              <text selectable={false} fg={theme.text} onMouseDown={environments}>
                 T3 Code ▾
               </text>
             </box>
             <text
+              selectable={false}
               height={1}
               flexShrink={0}
               fg={theme.textMuted}
@@ -1230,7 +1231,11 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
               {state()?.label ?? (props.demo ? "Demo" : "Connect environment")}
             </text>
             <box height={1} flexShrink={0} marginTop={1} marginBottom={1}>
-              <text fg={theme.primary} onMouseDown={() => newThread(project()?.id)}>
+              <text
+                selectable={false}
+                fg={theme.primary}
+                onMouseDown={() => newThread(project()?.id)}
+              >
                 {icon("add")} New thread ^N
               </text>
             </box>
@@ -1242,7 +1247,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
               justifyContent="space-between"
             >
               <text fg={theme.text}>Threads</text>
-              <text fg={theme.textMuted} onMouseDown={filterPicker}>
+              <text selectable={false} fg={theme.textMuted} onMouseDown={filterPicker}>
                 {filter()} ▾
               </text>
             </box>
@@ -1285,14 +1290,21 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
                         else openThread(entry.id);
                       }}
                     >
-                      <text width={2} flexShrink={0} fg={status().color}>
+                      <text selectable={false} width={2} flexShrink={0} fg={status().color}>
                         {status().symbol}
                       </text>
-                      <text flexGrow={1} minWidth={0} height={1} truncate fg={status().color}>
+                      <text
+                        selectable={false}
+                        flexGrow={1}
+                        minWidth={0}
+                        height={1}
+                        truncate
+                        fg={status().color}
+                      >
                         {entry.title}
                       </text>
                       <Show when={entry.pinnedAt}>
-                        <text width={2} flexShrink={0} fg={theme.textMuted}>
+                        <text selectable={false} width={2} flexShrink={0} fg={theme.textMuted}>
                           {` ${icon("pin")}`}
                         </text>
                       </Show>
@@ -1312,6 +1324,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
                 }
               >
                 <text
+                  selectable={false}
                   fg={state()?.olderSettled?.error ? theme.error : theme.primary}
                   wrapMode="word"
                   onMouseDown={() => void run(() => client().loadOlderSettled())}
@@ -1324,6 +1337,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
               </Show>
             </scrollbox>
             <text
+              selectable={false}
               height={1}
               flexShrink={0}
               fg={activeFocus() === "sidebar" ? theme.primary : theme.textMuted}
@@ -1344,11 +1358,16 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
             borderColor={theme.border}
           >
             <Show when={!showSidebar()}>
-              <text fg={theme.primary} marginRight={2} onMouseDown={palette}>
+              <text selectable={false} fg={theme.primary} marginRight={2} onMouseDown={palette}>
                 T3
               </text>
             </Show>
-            <text fg={theme.textMuted} flexShrink={0} onMouseDown={() => newThread()}>
+            <text
+              selectable={false}
+              fg={theme.textMuted}
+              flexShrink={0}
+              onMouseDown={() => newThread()}
+            >
               {project()?.title ?? "T3 Code"}
               {" / "}
             </text>
@@ -1359,6 +1378,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
             </text>
             <Show when={thread()?.branch}>
               <text
+                selectable={false}
                 fg={theme.textMuted}
                 marginLeft={1}
                 truncate
@@ -1370,13 +1390,24 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
                 {icon("git")} {thread()?.branch}
               </text>
             </Show>
-            <text fg={theme.textMuted} marginLeft={2} flexShrink={0} onMouseDown={views}>
+            <text
+              selectable={false}
+              fg={theme.textMuted}
+              marginLeft={2}
+              flexShrink={0}
+              onMouseDown={views}
+            >
               Views ▾
             </text>
-            <text fg={theme.textMuted} marginLeft={2} onMouseDown={showChanges}>
+            <text selectable={false} fg={theme.textMuted} marginLeft={2} onMouseDown={showChanges}>
               Changes
             </text>
-            <text fg={theme.textMuted} marginLeft={2} onMouseDown={() => threadActions()}>
+            <text
+              selectable={false}
+              fg={theme.textMuted}
+              marginLeft={2}
+              onMouseDown={() => threadActions()}
+            >
               •••
             </text>
           </box>
@@ -1405,10 +1436,16 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
                         <text fg={theme.textMuted} marginTop={1} wrapMode="word">
                           Use the same projects and agents from this terminal.
                         </text>
-                        <text fg={theme.primary} marginTop={2} onMouseDown={pair}>
+                        <text
+                          selectable={false}
+                          fg={theme.primary}
+                          marginTop={2}
+                          onMouseDown={pair}
+                        >
                           Pair environment
                         </text>
                         <text
+                          selectable={false}
                           fg={theme.textMuted}
                           marginTop={1}
                           onMouseDown={() => openArea("settings")}
@@ -1535,7 +1572,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
               state()?.error ??
               `${state()?.connection ?? "offline"}  ${state()?.label ?? "T3 Code"}`)}
         </text>
-        <text fg={theme.textMuted} onMouseDown={shortcuts}>
+        <text selectable={false} fg={theme.textMuted} onMouseDown={shortcuts}>
           {dimensions().width >= 86
             ? "F6 focus  ^P commands  ^T terminal  ^Q quit"
             : "^P commands  ^Q quit"}

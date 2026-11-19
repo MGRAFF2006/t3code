@@ -1601,18 +1601,19 @@ function ThreadConversation(
       <Show when={findQuery() && (findResult() || finding())}>
         <box height={1} paddingX={1} flexDirection="row" gap={2}>
           <text
+            selectable={false}
             fg={theme.textMuted}
             flexGrow={1}
             truncate
             onMouseDown={findPrompt}
           >{`Find: ${findQuery()} · ${finding() ? "Searching…" : findResult()?.totalMatches ? `${findResult()!.activeIndex + 1}/${findResult()!.totalMatches}` : "No matches"}`}</text>
-          <text fg={theme.primary} onMouseDown={() => stepFind(-1)}>
+          <text selectable={false} fg={theme.primary} onMouseDown={() => stepFind(-1)}>
             Previous
           </text>
-          <text fg={theme.primary} onMouseDown={() => stepFind(1)}>
+          <text selectable={false} fg={theme.primary} onMouseDown={() => stepFind(1)}>
             Next ^G
           </text>
-          <text fg={theme.textMuted} onMouseDown={closeFind}>
+          <text selectable={false} fg={theme.textMuted} onMouseDown={closeFind}>
             Close
           </text>
         </box>
@@ -1633,7 +1634,7 @@ function ThreadConversation(
         contentOptions={{ paddingX: dimensions().width > 120 ? 3 : 1 }}
       >
         <Show when={props.state()?.hasMoreHistory}>
-          <text fg={theme.primary} onMouseDown={loadEarlier}>
+          <text selectable={false} fg={theme.primary} onMouseDown={loadEarlier}>
             {loadingHistory() ? "Loading earlier messages…" : "↑ Load earlier messages"}
           </text>
         </Show>
@@ -1651,12 +1652,14 @@ function ThreadConversation(
             </text>
             <box flexDirection="row" gap={2}>
               <text
+                selectable={false}
                 fg={theme.primary}
                 onMouseDown={() => setText("Explain how this project is organized.")}
               >
                 Explore this project
               </text>
               <text
+                selectable={false}
                 fg={theme.primary}
                 onMouseDown={() => {
                   setText("Review the current changes for bugs and regressions.");
@@ -1730,19 +1733,21 @@ function ThreadConversation(
         />
       </scrollbox>
       <Show when={!following()}>
-        <text fg={theme.primary} onMouseDown={goBottom}>
+        <text selectable={false} fg={theme.primary} onMouseDown={goBottom}>
           ↓ Latest messages
         </text>
       </Show>
       <Show when={queue().queuedRuns.length > 0}>
         <box backgroundColor={theme.backgroundPanel} paddingX={1}>
           <text
+            selectable={false}
             fg={theme.textMuted}
             onMouseDown={queueActions}
           >{`${queue().isHeld ? "Ⅱ Queue paused" : "Queued"} · ${queue().queuedRuns.length} message${queue().queuedRuns.length === 1 ? "" : "s"} · Ctrl+J manage`}</text>
           <For each={queue().queuedRuns.slice(0, 2)}>
             {(value, index) => (
               <text
+                selectable={false}
                 fg={theme.textMuted}
                 truncate
                 onMouseDown={queueActions}
@@ -1753,7 +1758,12 @@ function ThreadConversation(
       </Show>
       <For each={retryablePreparation()}>
         {(runId) => (
-          <text fg={theme.warning} paddingX={1} onMouseDown={() => retryPreparation(runId)}>
+          <text
+            selectable={false}
+            fg={theme.warning}
+            paddingX={1}
+            onMouseDown={() => retryPreparation(runId)}
+          >
             {retryingPreparation().has(runId)
               ? "Retrying workspace setup…"
               : "Workspace setup failed · Retry setup"}
@@ -1762,6 +1772,7 @@ function ThreadConversation(
       </For>
       <Show when={freshContext()}>
         <text
+          selectable={false}
           fg={theme.primary}
           paddingX={1}
           onMouseDown={() => {
@@ -1775,6 +1786,7 @@ function ThreadConversation(
       <Show when={compactTokens()}>
         {(tokens) => (
           <text
+            selectable={false}
             fg={theme.textMuted}
             paddingX={1}
             truncate
@@ -1790,6 +1802,7 @@ function ThreadConversation(
       <Show when={offeredSuggestion()}>
         {(value) => (
           <text
+            selectable={false}
             fg={theme.textMuted}
             paddingX={1}
             height={1}
@@ -1805,6 +1818,7 @@ function ThreadConversation(
       </Show>
       <box flexDirection="row" paddingX={1} height={1}>
         <text
+          selectable={false}
           fg={
             pendingCount() > 0 ? theme.warning : queue().activeRun ? theme.primary : theme.textMuted
           }
@@ -1829,6 +1843,7 @@ function ThreadConversation(
         </Show>
         <Show when={queue().activeRun}>
           <text
+            selectable={false}
             fg={theme.textMuted}
             onMouseDown={() => {
               void props.ui.run(() => props.client.interrupt());
@@ -1857,7 +1872,7 @@ function ThreadConversation(
           </text>
         </Show>
         <Show when={attachments().length > 0}>
-          <text fg={theme.textMuted} truncate onMouseDown={attach}>
+          <text selectable={false} fg={theme.textMuted} truncate onMouseDown={attach}>
             {attachments()
               .map((value) => `${value.type === "image" ? "▧" : "▤"} ${value.name}`)
               .join("   ")}{" "}
@@ -1865,7 +1880,7 @@ function ThreadConversation(
           </text>
         </Show>
         <Show when={referencedDraftContext(draft(), context()).length > 0}>
-          <text fg={theme.textMuted} truncate onMouseDown={contextMenu}>
+          <text selectable={false} fg={theme.textMuted} truncate onMouseDown={contextMenu}>
             {referencedDraftContext(draft(), context())
               .map((record) => record.label)
               .join(" · ")}{" "}
@@ -1915,36 +1930,45 @@ function ThreadConversation(
         />
         <box flexDirection="row" height={1} marginTop={1}>
           <text
+            selectable={false}
             fg={thread().interactionMode === "plan" ? theme.primary : theme.textMuted}
             onMouseDown={togglePlan}
           >
             {thread().interactionMode === "plan" ? "Plan" : "Build"}
           </text>
           <text
+            selectable={false}
             fg={theme.text}
             onMouseDown={props.ui.chooseModel}
             truncate
           >{`  ${thread().modelSelection.model}`}</text>
-          <text fg={theme.textMuted} onMouseDown={options}>
+          <text selectable={false} fg={theme.textMuted} onMouseDown={options}>
             {" "}
             ⚙{" "}
           </text>
-          <text fg={theme.textMuted} onMouseDown={attach}>
+          <text selectable={false} fg={theme.textMuted} onMouseDown={attach}>
             {" "}
             Attach{" "}
           </text>
-          <text fg={theme.textMuted} onMouseDown={contextMenu}>
+          <text selectable={false} fg={theme.textMuted} onMouseDown={contextMenu}>
             {" "}
             Context{" "}
           </text>
-          <text fg={theme.textMuted} onMouseDown={savedPrompts}>
+          <text selectable={false} fg={theme.textMuted} onMouseDown={savedPrompts}>
             {" "}
             Saved{" "}
           </text>
-          <text fg={theme.textMuted} flexGrow={1} truncate onMouseDown={permissions}>
+          <text
+            selectable={false}
+            fg={theme.textMuted}
+            flexGrow={1}
+            truncate
+            onMouseDown={permissions}
+          >
             {runtimeLabels[thread().runtimeMode]}
           </text>
           <text
+            selectable={false}
             fg={
               (draft().trim() || attachments().length > 0) && !sending()
                 ? theme.primary

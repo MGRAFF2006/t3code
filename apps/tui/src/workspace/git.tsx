@@ -554,7 +554,7 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
             fallback={
               <box>
                 <text fg={theme.textMuted}>This project is not a Git repository.</text>
-                <text fg={theme.primary} onMouseDown={initialize}>
+                <text selectable={false} fg={theme.primary} onMouseDown={initialize}>
                   Initialize repository [i]
                 </text>
               </box>
@@ -562,13 +562,18 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
           >
             <box flexDirection="row" gap={2} height={1} flexShrink={0}>
               <text
+                selectable={false}
                 fg={theme.primary}
                 onMouseDown={() => void props.ui.run(branches)}
               >{`${local().refName ?? "Detached HEAD"} ▾`}</text>
-              <text fg={theme.textMuted} onMouseDown={() => void props.ui.run(worktrees)}>
+              <text
+                selectable={false}
+                fg={theme.textMuted}
+                onMouseDown={() => void props.ui.run(worktrees)}
+              >
                 Worktrees
               </text>
-              <text fg={theme.textMuted} onMouseDown={gitActions}>
+              <text selectable={false} fg={theme.textMuted} onMouseDown={gitActions}>
                 More ▾
               </text>
               <Show when={props.status().remote}>
@@ -584,10 +589,12 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
             </text>
             <box flexDirection="row" gap={2} marginY={1} flexShrink={0}>
               <text
+                selectable={false}
                 fg={busy() ? theme.textMuted : theme.primary}
                 onMouseDown={commitFiles}
               >{`Commit (${selectedPaths().length})`}</text>
               <text
+                selectable={false}
                 fg={theme.primary}
                 onMouseDown={() => {
                   if (!busy()) push();
@@ -596,6 +603,7 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
                 Push
               </text>
               <text
+                selectable={false}
                 fg={theme.primary}
                 onMouseDown={() => {
                   if (!busy()) pull();
@@ -603,7 +611,7 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
               >
                 Pull
               </text>
-              <text fg={theme.textMuted} onMouseDown={toggleAll}>
+              <text selectable={false} fg={theme.textMuted} onMouseDown={toggleAll}>
                 {selectedPaths().length === files().length && files().length > 0
                   ? "Deselect all"
                   : "Select all"}
@@ -637,17 +645,26 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
                     }}
                   >
                     <text
+                      selectable={false}
                       fg={selected().has(file.path) ? theme.primary : theme.textMuted}
                       width={4}
                       flexShrink={0}
                     >
                       {selected().has(file.path) ? "[✓] " : "[ ] "}
                     </text>
-                    <text fg={theme.text} flexGrow={1} truncate>
+                    <text selectable={false} fg={theme.text} flexGrow={1} truncate>
                       {file.path}
                     </text>
-                    <text fg={theme.diffAdded} flexShrink={0}>{` +${file.insertions}`}</text>
-                    <text fg={theme.diffRemoved} flexShrink={0}>{` −${file.deletions}`}</text>
+                    <text
+                      selectable={false}
+                      fg={theme.diffAdded}
+                      flexShrink={0}
+                    >{` +${file.insertions}`}</text>
+                    <text
+                      selectable={false}
+                      fg={theme.diffRemoved}
+                      flexShrink={0}
+                    >{` −${file.deletions}`}</text>
                   </box>
                 )}
               </For>
@@ -659,6 +676,7 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
             </Show>
             <Show when={log()}>
               <text
+                selectable={false}
                 fg={theme.textMuted}
                 onMouseDown={() => props.ui.text("Git output", log(), "text")}
                 flexShrink={0}
@@ -669,6 +687,7 @@ export function GitPanel(props: WorkspaceContext & { visible: boolean }) {
             <Show when={props.status().remote?.pr}>
               {(pr) => (
                 <text
+                  selectable={false}
                   fg={theme.primary}
                   truncate
                   flexShrink={0}

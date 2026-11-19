@@ -364,6 +364,7 @@ function Item(props: {
     >
       <box flexDirection="row" height={1}>
         <text
+          selectable={false}
           flexGrow={1}
           truncate
           fg={item().type === "error" ? theme.error : isMessage() ? theme.text : theme.textMuted}
@@ -378,6 +379,7 @@ function Item(props: {
         >{`${isMessage() || isPlan() ? "" : `${icon(showBody() ? "collapse" : "expand")} `}${summary()}`}</text>
         <Show when={showBody() && !isMessage()}>
           <text
+            selectable={false}
             fg={theme.textMuted}
             onMouseDown={() => {
               props.onFocus?.();
@@ -390,6 +392,7 @@ function Item(props: {
         </Show>
         <Show when={props.onCopy && (isMessage() || showBody())}>
           <text
+            selectable={false}
             fg={theme.textMuted}
             onMouseDown={() => {
               props.onFocus?.();
@@ -401,13 +404,14 @@ function Item(props: {
           </text>
         </Show>
         <Show when={links().length && props.onOpenLinks}>
-          <text fg={theme.textMuted} onMouseDown={() => props.onOpenLinks?.()}>
+          <text selectable={false} fg={theme.textMuted} onMouseDown={() => props.onOpenLinks?.()}>
             {" "}
             Links{" "}
           </text>
         </Show>
         <Show when={item().type === "file_change"}>
           <text
+            selectable={false}
             fg={theme.primary}
             onMouseDown={() => {
               const value = item();
@@ -457,7 +461,11 @@ function Item(props: {
         </Show>
       </Show>
       <Show when={showBody() && outputError()}>
-        <text fg={theme.error} onMouseDown={() => setOutputRevision((value) => value + 1)}>
+        <text
+          selectable={false}
+          fg={theme.error}
+          onMouseDown={() => setOutputRevision((value) => value + 1)}
+        >
           {outputError()} · Retry output
         </text>
       </Show>
@@ -467,6 +475,7 @@ function Item(props: {
             when={secretDisplay()?.kind === "pending"}
             fallback={
               <text
+                selectable={false}
                 fg={theme.textMuted}
                 onMouseDown={() => {
                   props.onFocus?.();
@@ -480,6 +489,7 @@ function Item(props: {
             }
           >
             <text
+              selectable={false}
               fg={theme.warning}
               onMouseDown={() => {
                 props.onFocus?.();
@@ -495,6 +505,7 @@ function Item(props: {
         <For each={html()}>
           {(artifact) => (
             <text
+              selectable={false}
               fg={theme.primary}
               onMouseDown={() => {
                 props.onFocus?.();
@@ -510,6 +521,7 @@ function Item(props: {
             <box>
               <box flexDirection="row" gap={2}>
                 <text
+                  selectable={false}
                   fg={theme.primary}
                   truncate
                   onMouseDown={() => {
@@ -524,6 +536,7 @@ function Item(props: {
                 >{`${visibleImages().has(index()) ? "▾ Hide" : "▸ Show"} image: ${image.label}`}</text>
                 <Show when={props.onPreviewAsset}>
                   <text
+                    selectable={false}
                     fg={theme.textMuted}
                     onMouseDown={() => {
                       props.onFocus?.();
@@ -610,6 +623,7 @@ function WorkGroup(props: {
     >
       <Show when={props.grouped}>
         <text
+          selectable={false}
           paddingLeft={1}
           height={1}
           truncate
@@ -635,6 +649,7 @@ function WorkGroup(props: {
           </Show>
           <Show when={error()}>
             <text
+              selectable={false}
               fg={theme.error}
               onMouseDown={() => {
                 requestedCursor = undefined;

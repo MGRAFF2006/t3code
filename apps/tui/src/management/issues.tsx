@@ -752,6 +752,7 @@ export function IssuesPanel(props: FeatureProps) {
                       <For each={value().linkedPullRequests}>
                         {(pr) => (
                           <text
+                            selectable={false}
                             fg={theme.primary}
                             wrapMode="word"
                             onMouseDown={() => props.ui.text(pr.title, pr.url)}

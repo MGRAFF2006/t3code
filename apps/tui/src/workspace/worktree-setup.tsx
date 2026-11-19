@@ -118,6 +118,7 @@ export function WorktreeSetupStatus(props: FeatureProps & { visible: boolean }) 
       <Show when={setup()}>
         {(value) => (
           <text
+            selectable={false}
             fg={value().phase === "failed" ? theme.error : theme.textMuted}
             truncate
             onMouseDown={() => actions(value())}

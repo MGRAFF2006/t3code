@@ -1149,6 +1149,7 @@ export function SettingsPanel(props: FeatureProps) {
         >
           {([name, label]) => (
             <text
+              selectable={false}
               fg={section() === name ? theme.primary : theme.textMuted}
               onMouseDown={() => switchSection(name)}
             >
@@ -1174,6 +1175,7 @@ export function SettingsPanel(props: FeatureProps) {
         >
           {([name, label]) => (
             <text
+              selectable={false}
               fg={section() === name ? theme.primary : theme.textMuted}
               onMouseDown={() => switchSection(name)}
             >

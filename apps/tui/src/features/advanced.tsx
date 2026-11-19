@@ -125,10 +125,11 @@ export function AdvancedPanel(props: FeatureProps) {
   return (
     <box flexGrow={1} minHeight={0} padding={1} onMouseDown={props.onFocus}>
       <text fg={theme.text}>{title()}</text>
-      <text fg={theme.primary} marginTop={1} onMouseDown={pick}>
+      <text selectable={false} fg={theme.primary} marginTop={1} onMouseDown={pick}>
         Choose service… Enter
       </text>
       <text
+        selectable={false}
         fg={theme.textMuted}
         marginBottom={1}
         onMouseDown={() => {
