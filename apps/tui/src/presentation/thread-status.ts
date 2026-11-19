@@ -43,7 +43,7 @@ export function threadStatusPresentation(status: ReturnType<typeof threadStatus>
     case "working":
       return { color: theme.statusWorking, symbol: icon("running") };
     case "approval":
-      return { color: theme.statusApproval, symbol: icon("warning") };
+      return { color: theme.statusApproval, symbol: icon("approval") };
     case "input":
       return { color: theme.statusInput, symbol: icon("input") };
     case "request":

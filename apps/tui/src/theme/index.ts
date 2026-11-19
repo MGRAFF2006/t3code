@@ -39,7 +39,7 @@ export function resolveTheme(mode: ThemeMode) {
     statusInput: mode === "dark" ? "#a3b3ff" : "#4f39f6",
     statusRequest: mode === "dark" ? "#f4a8ff" : "#c800de",
     statusDone: mode === "dark" ? "#00d492" : "#007a55",
-    statusWoken: mode === "dark" ? "#fb923c" : "#9a3412",
+    statusWoken: colors.warningForeground,
     statusFailed: colors.errorForeground,
     message: colors.messageSurface,
     markdownHeading: colors.text,

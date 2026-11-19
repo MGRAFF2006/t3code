@@ -52,13 +52,17 @@ it.each([
     expected: "done",
   },
   {
-    name: "failed",
-    changes: { status: "failed", lastError: "Provider failed" },
+    name: "missing provider credential",
+    changes: { status: "failed", lastErrorClass: "provider_error", lastError: "Missing API token" },
     expected: "failed",
   },
   {
-    name: "usage limit",
-    changes: { status: "failed", lastErrorClass: "usage_limit" },
+    name: "exhausted provider token budget",
+    changes: {
+      status: "failed",
+      lastErrorClass: "usage_limit",
+      lastError: "Token budget exhausted",
+    },
     expected: "limited",
   },
   ...(["interrupted", "cancelled", "rolled_back"] as const).map((status) => ({
