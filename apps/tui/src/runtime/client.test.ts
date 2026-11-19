@@ -15,15 +15,34 @@ import * as Option from "effect/Option";
 import { Atom, AsyncResult } from "effect/reactivity";
 import * as ShellState from "@t3tools/client-runtime/state/shell";
 import * as ServerState from "@t3tools/client-runtime/state/server";
+import * as SessionState from "@t3tools/client-runtime/state/session";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
-import type { ServerConfig } from "@t3tools/contracts";
+import type {
+  AuthSessionState,
+  OrchestrationV2ThreadShell,
+  ServerConfig,
+  EnvironmentId as EnvironmentIdType,
+} from "@t3tools/contracts";
 import * as ThreadState from "@t3tools/client-runtime/state/threads";
-import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
-import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import type { StartThreadTurnInput, VisitThreadInput } from "@t3tools/client-runtime/operations";
+import {
+  AuthOrchestrationReadScope,
+  AuthOrchestrationOperateScope,
+  AuthProvidersManageScope,
+  AuthSourceControlWriteScope,
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Cause from "effect/Cause";
 import {
   v2Project,
   v2Projection,
   v2ShellSnapshot,
+  v2ThreadShell,
 } from "../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures.ts";
 import * as RpcBridge from "../rpc/bridge.ts";
 import { ORCHESTRATION_V2_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
@@ -489,4 +508,276 @@ it.effect("keeps project creation on its original environment while UUID allocat
       }),
     (directory) => Effect.promise(() => NodeFSP.rm(directory, { recursive: true })),
   ),
+);
+
+it.effect(
+  "tracks only the viewed destination and revokes captured permission observers on environment changes",
+  () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-tui-views-"))),
+      (configDir) =>
+        Effect.gen(function* () {
+          const firstEnvironment = EnvironmentId.make("viewed-environment");
+          const secondEnvironment = EnvironmentId.make("other-viewed-environment");
+          const threadId = ThreadId.make("viewed-thread");
+          const legacyThreadId = ThreadId.make("legacy-viewed-thread");
+          const at = (minute: number) => DateTime.makeUnsafe(`2026-06-20T00:0${minute}:00Z`);
+          const row: OrchestrationV2ThreadShell = {
+            ...v2ThreadShell,
+            id: threadId,
+            latestRunId: RunId.make("viewed-run"),
+            status: "running" as const,
+            lastVisitedAt: at(0),
+            updatedAt: at(1),
+          };
+          const initialState = {
+            ...ShellState.EMPTY_SHELL_STATE,
+            snapshot: Option.some({ ...v2ShellSnapshot, threads: [row] }),
+            status: "live" as const,
+          };
+          const shellValues = Atom.family((_id: EnvironmentIdType) => Atom.make(initialState));
+          let registry: import("effect/reactivity/AtomRegistry").AtomRegistry | undefined;
+          const shellStates = Atom.family((id: EnvironmentIdType) =>
+            Atom.make((get) => {
+              registry = get.registry;
+              return get(shellValues(id));
+            }),
+          );
+          const shellFactory = ShellState.createEnvironmentShellAtoms;
+          using _shell = vi
+            .spyOn(ShellState, "createEnvironmentShellAtoms")
+            .mockImplementation((runtime) => ({
+              ...shellFactory(runtime),
+              stateValueAtom: shellStates,
+              stateAtom: (id) => Atom.make((get) => AsyncResult.success(get(shellStates(id)))),
+            }));
+          using _threads = vi
+            .spyOn(ThreadState, "createEnvironmentThreadStateAtoms")
+            .mockImplementation(() => ({
+              stateAtom: (_id, selected) =>
+                Atom.make(
+                  AsyncResult.success({
+                    ...ThreadState.EMPTY_ENVIRONMENT_THREAD_STATE,
+                    data: Option.some({
+                      ...v2Projection,
+                      thread: { ...v2Projection.thread, id: selected },
+                    }),
+                    status: "live" as const,
+                  }),
+                ),
+            }));
+          const grant = (scopes: NonNullable<AuthSessionState["scopes"]>): AuthSessionState => ({
+            authenticated: true,
+            auth: {
+              policy: "remote-reachable",
+              bootstrapMethods: [],
+              sessionMethods: [],
+              sessionCookieName: "view-test",
+            },
+            scopes,
+            permissions: scopes,
+          });
+          const sessionValues = Atom.family((_id: EnvironmentIdType) =>
+            Atom.make<AsyncResult.AsyncResult<AuthSessionState, string>>(
+              AsyncResult.success(grant([AuthOrchestrationReadScope])),
+            ),
+          );
+          const sessionFactory = SessionState.createEnvironmentSessionAtoms;
+          using _sessions = vi
+            .spyOn(SessionState, "createEnvironmentSessionAtoms")
+            .mockImplementation((...args) => ({
+              ...sessionFactory(...args),
+              sessionStateAtom: sessionValues,
+              sessionStateValueAtom: (id) =>
+                Atom.make((get) => AsyncResult.getOrElse(get(sessionValues(id)), () => null)),
+            }));
+          const visits: Array<{ environmentId: EnvironmentIdType; input: VisitThreadInput }> = [];
+          const commandsFactory = ThreadState.createThreadEnvironmentAtoms;
+          using _commands = vi
+            .spyOn(ThreadState, "createThreadEnvironmentAtoms")
+            .mockImplementation((...args) => {
+              const original = commandsFactory(...args);
+              return {
+                ...original,
+                visit: {
+                  ...original.visit,
+                  run: async (_registry, target) => {
+                    visits.push(target);
+                    return AsyncResult.success({ sequence: visits.length });
+                  },
+                },
+              };
+            });
+          using _fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+            const url = new URL(
+              typeof input === "string" || input instanceof URL ? input : input.url,
+            );
+            if (url.pathname === "/api/auth/session")
+              return Response.json(grant([AuthOrchestrationReadScope]));
+            return Response.json({
+              environmentId: url.hostname.startsWith("other")
+                ? secondEnvironment
+                : firstEnvironment,
+              label: "Visit fixture",
+              platform: { os: "linux", arch: "x64" },
+              serverVersion: "0.0.0-test",
+              orchestrationProtocolVersion: 0,
+              capabilities: {},
+            });
+          });
+          const other = yield* Effect.promise(() =>
+            createTuiClient({
+              configDir,
+              url: "http://other-view.invalid",
+              token: "test-other-view",
+            }),
+          );
+          other.close();
+          const client = yield* Effect.promise(() =>
+            createTuiClient({
+              configDir,
+              url: "http://first-view.invalid",
+              token: "test-first-view",
+            }),
+          );
+          yield* Effect.addFinalizer(() => Effect.sync(() => client.close()));
+          if (!registry) throw new Error("View fixture did not mount its shell");
+          const updateShell = (
+            id: EnvironmentIdType,
+            patch: Partial<OrchestrationV2ThreadShell>,
+          ) => {
+            const state = registry!.get(shellValues(id));
+            registry!.set(shellValues(id), {
+              ...state,
+              snapshot: Option.some({ ...v2ShellSnapshot, threads: [{ ...row, ...patch }] }),
+            });
+          };
+          client.selectThread(threadId);
+          expect(visits).toEqual([]);
+          client.setViewedThread(threadId);
+          client.setViewedThread(threadId);
+          expect(visits).toEqual([
+            {
+              environmentId: firstEnvironment,
+              input: { threadId, visitedAt: DateTime.formatIso(at(1)), opened: true },
+            },
+          ]);
+          updateShell(firstEnvironment, {
+            status: "completed",
+            updatedAt: at(2),
+            latestRunCompletedAt: at(2),
+          });
+          expect(visits.at(-1)).toEqual({
+            environmentId: firstEnvironment,
+            input: { threadId, visitedAt: DateTime.formatIso(at(2)) },
+          });
+          client.setViewedThread(threadId, DateTime.formatIso(at(3)));
+          expect(visits.at(-1)?.input).toEqual({ threadId, visitedAt: DateTime.formatIso(at(3)) });
+          yield* Effect.promise(() => client.acknowledgeThread(threadId));
+          expect(visits.at(-1)).toEqual({
+            environmentId: firstEnvironment,
+            input: { threadId, visitedAt: DateTime.formatIso(at(3)), opened: false },
+          });
+          const beforeHidden = visits.length;
+          client.setViewedThread(null);
+          updateShell(firstEnvironment, {
+            status: "completed",
+            updatedAt: at(4),
+            latestRunCompletedAt: at(4),
+          });
+          expect(visits).toHaveLength(beforeHidden);
+          client.setViewedThread(threadId);
+          expect(visits.filter((visit) => visit.input.opened)).toHaveLength(1);
+          const readPermissions: boolean[] = [];
+          const operatePermissions: boolean[] = [];
+          const operateScopes: boolean[] = [];
+          const manageScopes: boolean[] = [];
+          const stopOperate = client.observeScope(AuthOrchestrationOperateScope, (allowed) =>
+            operateScopes.push(allowed),
+          );
+          client.observeScope(AuthProvidersManageScope, (allowed) => manageScopes.push(allowed));
+          const stopRead = client.observePermission(
+            WS_METHODS.serverRefreshProviders,
+            undefined,
+            (allowed) => readPermissions.push(allowed),
+          );
+          client.observePermission(
+            WS_METHODS.gitPreparePullRequestThread,
+            { cwd: "/repo", reference: "123", mode: "worktree", threadId },
+            (allowed) => operatePermissions.push(allowed),
+          );
+          expect(readPermissions.at(-1)).toBe(true);
+          expect(operatePermissions.at(-1)).toBe(false);
+          expect(operateScopes.at(-1)).toBe(false);
+          expect(manageScopes.at(-1)).toBe(false);
+          registry.set(
+            sessionValues(firstEnvironment),
+            AsyncResult.success(grant([AuthOrchestrationReadScope, AuthProvidersManageScope])),
+          );
+          expect(manageScopes.at(-1)).toBe(true);
+          expect(operateScopes.at(-1)).toBe(false);
+          registry.set(
+            sessionValues(firstEnvironment),
+            AsyncResult.success(
+              grant([
+                AuthOrchestrationReadScope,
+                AuthSourceControlWriteScope,
+                AuthOrchestrationOperateScope,
+              ]),
+            ),
+          );
+          expect(operatePermissions.at(-1)).toBe(true);
+          expect(operateScopes.at(-1)).toBe(true);
+          expect(manageScopes.at(-1)).toBe(false);
+          registry.set(sessionValues(firstEnvironment), AsyncResult.initial());
+          expect(operateScopes.at(-1)).toBe(false);
+          registry.set(
+            sessionValues(firstEnvironment),
+            AsyncResult.success(grant([AuthOrchestrationOperateScope])),
+          );
+          expect(operateScopes.at(-1)).toBe(true);
+          registry.set(
+            sessionValues(firstEnvironment),
+            AsyncResult.failure(Cause.fail("Session lookup failed")),
+          );
+          expect(operateScopes.at(-1)).toBe(false);
+          registry.set(
+            sessionValues(firstEnvironment),
+            AsyncResult.success(grant([AuthOrchestrationOperateScope])),
+          );
+          yield* Effect.promise(() => client.selectEnvironment(secondEnvironment));
+          expect(readPermissions.at(-1)).toBe(false);
+          expect(operatePermissions.at(-1)).toBe(false);
+          expect(operateScopes.at(-1)).toBe(false);
+          const stoppedPermissions = operatePermissions.length;
+          const stoppedScopes = operateScopes.length;
+          registry.set(sessionValues(firstEnvironment), AsyncResult.success(grant([])));
+          expect(operatePermissions).toHaveLength(stoppedPermissions);
+          expect(operateScopes).toHaveLength(stoppedScopes);
+          stopRead();
+          stopOperate();
+          const beforeOtherView = visits.length;
+          client.setViewedThread(threadId);
+          updateShell(firstEnvironment, { updatedAt: at(5), latestRunCompletedAt: at(5) });
+          expect(visits).toHaveLength(beforeOtherView);
+          client.selectThread(threadId);
+          client.setViewedThread(threadId);
+          expect(visits.at(-1)).toEqual({
+            environmentId: secondEnvironment,
+            input: { threadId, visitedAt: DateTime.formatIso(at(1)), opened: true },
+          });
+          const beforeLegacy = visits.length;
+          updateShell(secondEnvironment, { id: legacyThreadId, lastVisitedAt: undefined });
+          client.selectThread(legacyThreadId);
+          client.setViewedThread(legacyThreadId);
+          expect(visits).toHaveLength(beforeLegacy);
+          expect(client.snapshot().shell?.threads[0]?.lastVisitedAt).toEqual(at(1));
+          yield* Effect.promise(() => client.acknowledgeThread(legacyThreadId));
+          expect(visits).toHaveLength(beforeLegacy);
+          expect(client.snapshot().shell?.threads[0]?.lastVisitedAt).toEqual(at(1));
+          client.close();
+          expect(() => client.setViewedThread(legacyThreadId)).not.toThrow();
+        }),
+      (directory) => Effect.promise(() => NodeFSP.rm(directory, { recursive: true })),
+    ),
 );

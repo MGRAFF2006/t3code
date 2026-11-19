@@ -1,4 +1,4 @@
-import type { AssetResource } from "@t3tools/contracts";
+import type { AssetResource, ProviderInstanceId } from "@t3tools/contracts";
 import type { Accessor } from "solid-js";
 import type { TuiClient, TuiSnapshot } from "../runtime/client.ts";
 
@@ -52,6 +52,7 @@ export interface UiController {
   openBrowser?(url: string): void;
   openThread(id: string): void;
   openArea(area: Area): void;
+  openProviderSettings?(instanceId: ProviderInstanceId): void;
   openFile(path: string, line?: number): void;
   showChanges(): void;
   chooseModel(): void;

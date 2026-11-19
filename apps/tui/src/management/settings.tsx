@@ -1,5 +1,5 @@
 import { useKeyboard } from "@opentui/solid";
-import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { getProviderClient, providerClients } from "@t3tools/client-runtime/provider-clients";
 import {
   CustomModelSetting,
@@ -50,9 +50,15 @@ interface SettingsEntry extends Choice {
   value?: string;
 }
 
-export function SettingsPanel(props: FeatureProps) {
+export function SettingsPanel(
+  props: FeatureProps & { initialProviderId?: ProviderInstanceId | undefined },
+) {
   const [section, setSection] = createSignal<SectionName>(
-    props.state()?.environmentId ? "environment" : "connections",
+    props.initialProviderId
+      ? "providers"
+      : props.state()?.environmentId
+        ? "environment"
+        : "connections",
   );
   const [index, setIndex] = createSignal(0);
   const [auth, setAuth] = createSignal<ProviderAuthState | null>(null);
@@ -75,6 +81,27 @@ export function SettingsPanel(props: FeatureProps) {
   const provider = createMemo(() => (section() === "providers" ? providers()[index()] : undefined));
 
   const environment = createMemo(() => props.state()?.environmentId);
+  createEffect(
+    on(
+      () => [environment(), props.initialProviderId] as const,
+      ([destination, instanceId]) => {
+        if (!destination || !instanceId) {
+          setSection(destination ? "environment" : "connections");
+          setIndex(0);
+          return;
+        }
+        const selected = providers().findIndex((entry) => entry.instanceId === instanceId);
+        if (selected < 0) {
+          setSection("environment");
+          setIndex(0);
+          props.ui.notify("This provider is no longer available on this environment.", true);
+          return;
+        }
+        setSection("providers");
+        setIndex(selected);
+      },
+    ),
+  );
   const providerId = createMemo(() => provider()?.instanceId);
   createEffect(() => {
     const environmentId = environment();

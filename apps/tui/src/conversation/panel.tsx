@@ -63,6 +63,7 @@ import { draftStore } from "./draft-storage.ts";
 import { contextActions } from "./context-actions.ts";
 import { planActions } from "./plan.ts";
 import { createFanoutTargets, startFanoutTargets, type FanoutTarget } from "./fanout.ts";
+import { createConversationStatus } from "./provider-status.tsx";
 
 const drafts = new Map<string, Draft>();
 const pendingSends = new Set<string>();
@@ -249,6 +250,8 @@ function ThreadConversation(
     props
       .state()
       ?.config?.providers.find((value) => value.instanceId === thread().modelSelection.instanceId);
+  const conversationStatus = createConversationStatus(props);
+  const StatusBanners = conversationStatus.Banners;
   const workspaceProvider = () =>
     provider()?.workspaceSnapshots?.find((value) => value.cwd === cwd());
   const usage = createMemo(() => {
@@ -1112,6 +1115,11 @@ function ThreadConversation(
   }
   const slashChoices = (): Choice[] => [
     {
+      title: "/status",
+      description: "Provider setup, errors, usage recovery and dismissed notices",
+      run: conversationStatus.openActions,
+    },
+    {
       title: "/links",
       description: "Open file and browser links from a message",
       run: () =>
@@ -1618,6 +1626,7 @@ function ThreadConversation(
           </text>
         </box>
       </Show>
+      <StatusBanners />
       <scrollbox
         ref={(node) => {
           history = node;

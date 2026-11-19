@@ -26,7 +26,7 @@ For local development, start `vp run dev` separately and use the server address 
 
 ## Navigate
 
-The left sidebar lists threads across projects, using T3's shared pinned and active ordering. The header's **Views** menu switches between conversation, workspace, pull requests, issues, scheduled tasks, settings and browser. Conversation stays central; Changes, Files, Git, Browser, Terminals and Devices can open alongside it on wide terminals or fill the main pane on smaller ones. Right-click a thread for its actions. **Ctrl+P** searches commands, including project creation/settings and server conversation search.
+The left sidebar lists threads across projects, using T3's shared pinned and active ordering. Its filter includes Working, Active, Settled, Snoozed and Archived. The header's **Views** menu switches between conversation, workspace, pull requests, issues, scheduled tasks, settings and browser. Conversation stays central; Changes, Files, Git, Browser, Terminals and Devices can open alongside it on wide terminals or fill the main pane on smaller ones. Right-click a thread for its actions. **Ctrl+P** searches commands, including project creation/settings and server conversation search.
 
 | Shortcut | Action                                                                        |
 | -------- | ----------------------------------------------------------------------------- |
@@ -49,6 +49,8 @@ Consecutive tool and reasoning activity collapses into a work group. Expand a gr
 **Ctrl+T** hands the terminal directly to T3's PTY. **Ctrl+]** returns to the interface and leaves that shell running. Project scripts use separate terminal sessions so they do not inject commands into an existing foreground process.
 
 ## Workflows
+
+Provider and conversation warnings offer recovery actions through **Actions**, **Recovery**, or `/status` followed by Tab. Open the selected provider's setup, refresh its status, inspect the full error, or restore a dismissed notice. For usage limits, **Resume at reset** and **Snooze until reset** are independent choices; **Cancel auto-resume** and **Wake now** reverse them. ChatGPT account usage management opens in your browser.
 
 | Area              | Native terminal controls                                                                                                                                                                                                                                                                                                                |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -91,11 +93,11 @@ Electron can render a BrowserWindow into a bitmap using [offscreen rendering](ht
 
 ## Coverage and remaining limits
 
-The [nightly coverage audit](https://github.com/MGRAFF2006/t3code-tui/issues/1) records source evidence and verification separately for all four surfaces. The command palette’s **Developer → Service inspector** retains typed access to less common operations; this is an advanced request editor, not dedicated interface parity.
+The [desktop compatibility audit](https://github.com/MGRAFF2006/t3code-tui/issues/1) uses desktop features as its target and records native controls, explicit graphical handoffs, missing behavior and verification evidence separately. The command palette’s **Developer → Service inspector** retains typed access to less common operations; this is an advanced request editor, not dedicated interface parity.
 
 Remaining gaps include editing/resending dispatched messages, a durable offline send queue, exact inline search highlighting, dictation, custom themes and remapping the terminal’s own shortcuts. Advanced PR review controls, some connection-host administration and embedded MCP app interfaces also remain partial. Server web/desktop keybindings can be edited here; they do not remap TUI controls.
 
-Interactive browser/device pixels, desktop window/tray controls and screen-selection gestures retain their graphical surfaces. Text/source, supported image assets and cached notebook cells render natively; executable notebook output, office-document layout and media playback use explicit external viewers. The terminal owns fonts and opacity. Interface text is currently English; server/provider content retains its original language.
+Shared browser interaction and device display/input remain missing from this client. Opening a browser URL locally does not carry the shared browser's profile or session. Device management controls do not open a simulator view. Desktop window/tray controls and screen-selection gestures also remain unavailable. Text/source, supported image assets and cached notebook cells render natively; executable notebook output, office-document layout and media playback use explicit external viewers. The terminal owns fonts and opacity. Interface text is currently English; server/provider content retains its original language.
 
 Direct pairing, saved environments and managed SSH use T3's existing connection system. SSH passwords are masked and not saved. T3 Connect device login/account discovery are implemented, but the official relay currently rejects CLI OAuth at DPoP bootstrap; use direct pairing or SSH until that relay path supports it. Real SSH hosts, external provider authorization and forge mutations require their actual accounts and have not been exercised by local fixture tests.
 

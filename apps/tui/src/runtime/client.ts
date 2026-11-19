@@ -38,9 +38,14 @@ import {
 } from "@t3tools/client-runtime/state/threads";
 import { createEnvironmentSessionAtoms } from "@t3tools/client-runtime/state/session";
 import { createServerEnvironmentAtoms } from "@t3tools/client-runtime/state/server";
+import { createThreadVisitTracker } from "@t3tools/client-runtime/state/thread-visits";
+import { presentThreadShell } from "@t3tools/client-runtime/state/models";
+import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
 import {
+  createCommandPermissions,
   createRuntimeCommand,
   type AtomCommand,
+  environmentSessionGenerationAtom,
   executeConnectedEnvironmentHttpRequest,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
@@ -71,6 +76,9 @@ import {
   type OrchestrationMessageContext,
   UserInputAttachments,
   type ServerConfig,
+  type ScopedThreadRef,
+  type AuthEnvironmentScope,
+  sessionGrantsScope,
   type ProjectReadFileResult,
   type VcsStatusResult,
   type T3ProjectFile,
@@ -376,6 +384,98 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
     if (environmentId === null) throw new Error("Connect to an environment first.");
     return environmentId;
   };
+  const observeAvailability = (atom: Atom.Atom<boolean>, onChange: (allowed: boolean) => void) => {
+    if (closed) {
+      onChange(false);
+      return () => {};
+    }
+    let active = true;
+    const dispose = registry.subscribe(atom, onChange, { immediate: true });
+    const stop = () => {
+      if (!active) return;
+      active = false;
+      stops.delete(stop);
+      dispose();
+      onChange(false);
+    };
+    stops.add(stop);
+    return stop;
+  };
+  const localVisits = new Map<string, string>();
+  const withLocalVisits = (
+    destination: EnvironmentId,
+    shell: OrchestrationV2ShellSnapshot | null,
+  ) => {
+    if (shell === null || localVisits.size === 0) return shell;
+    const visited = (thread: OrchestrationV2ShellSnapshot["threads"][number]) => {
+      if (thread.lastVisitedAt !== undefined) return thread;
+      const value = localVisits.get(threadKey({ environmentId: destination, threadId: thread.id }));
+      return value ? { ...thread, lastVisitedAt: DateTime.makeUnsafe(value) } : thread;
+    };
+    return {
+      ...shell,
+      threads: shell.threads.map(visited),
+      archivedThreads: shell.archivedThreads.map(visited),
+    };
+  };
+  const viewedThreadAtom = Atom.make<(ScopedThreadRef & { readonly wokeAt: string | null }) | null>(
+    null,
+  );
+  const visitShells = Atom.family((key: string) => {
+    const ref = parseThreadKey(key);
+    return Atom.make((get) => {
+      const viewed = get(viewedThreadAtom);
+      if (viewed?.environmentId !== ref.environmentId || viewed.threadId !== ref.threadId)
+        return null;
+      const shell = get(shellSnapshot(ref.environmentId));
+      const source =
+        shell?.threads.find((thread) => thread.id === ref.threadId) ??
+        shell?.archivedThreads.find((thread) => thread.id === ref.threadId);
+      return source
+        ? { ...presentThreadShell(ref.environmentId, source), wokeAt: viewed.wokeAt }
+        : null;
+    });
+  });
+  const markLocalVisit = (ref: ScopedThreadRef, visitedAt: string) => {
+    const key = threadKey(ref);
+    const previous = localVisits.get(key);
+    if (previous && Date.parse(previous) >= Date.parse(visitedAt)) return;
+    localVisits.set(key, visitedAt);
+    if (ref.environmentId === environmentId)
+      update({
+        shell: withLocalVisits(ref.environmentId, registry.get(shellSnapshot(ref.environmentId))),
+      });
+  };
+  const visits = createThreadVisitTracker({
+    threadShellAtom: (ref) => visitShells(threadKey(ref)),
+    sessionGenerationAtom: (id) => environmentSessionGenerationAtom(runtime, id),
+    visit: threadCommands.visit,
+    markLocalVisit,
+  });
+  let stopVisits: (() => void) | undefined;
+  const clearViewedThread = () => {
+    if (closed) return;
+    registry.set(viewedThreadAtom, null);
+    stopVisits?.();
+    stopVisits = undefined;
+  };
+  const setViewedThread = (id: string | null, wokeAt: string | null = null) => {
+    if (closed) return;
+    const threadId = id === null ? null : ThreadId.make(id);
+    if (environmentId === null || threadId === null || snapshot.selectedThreadId !== threadId) {
+      clearViewedThread();
+      return;
+    }
+    const current = registry.get(viewedThreadAtom);
+    if (current?.environmentId === environmentId && current.threadId === threadId) {
+      if (current.wokeAt !== wokeAt) registry.set(viewedThreadAtom, { ...current, wokeAt });
+      return;
+    }
+    clearViewedThread();
+    const ref = { environmentId, threadId };
+    registry.set(viewedThreadAtom, { ...ref, wokeAt });
+    stopVisits = registry.mount(visits(ref));
+  };
   let loadOlderSettled: () => void = () => {
     throw new Error("Connect to an environment first.");
   };
@@ -400,7 +500,9 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
     observe(shellAtoms.stateValueAtom(currentEnvironmentId), (state) => {
       if (Option.isSome(state.error)) update({ error: state.error.value });
     });
-    observe(shellSnapshot(currentEnvironmentId), (shell) => update({ shell }));
+    observe(shellSnapshot(currentEnvironmentId), (shell) =>
+      update({ shell: withLocalVisits(currentEnvironmentId, shell) }),
+    );
     const scope = { environmentId: currentEnvironmentId, projectIds: null };
     let pageCount = 0;
     let releasePages: (() => void) | undefined;
@@ -515,6 +617,7 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
   };
   const selectThread = (id: string | null) => {
     if (id !== null) requireEnvironment();
+    if (snapshot.selectedThreadId !== id) clearViewedThread();
     stopThread?.();
     stopThread = undefined;
     update({
@@ -578,6 +681,7 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
         ),
       ),
     );
+    clearViewedThread();
     for (const stop of stops) stop();
     stops.clear();
     stopThread = undefined;
@@ -599,6 +703,56 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
   };
   const client = {
     localStateDirectory: configDir,
+    setViewedThread,
+    acknowledgeThread: async (id: string) => {
+      if (closed || snapshot.selectedThreadId !== id) return;
+      const destination = requireEnvironment();
+      const threadId = ThreadId.make(id);
+      const shell = registry.get(shellSnapshot(destination));
+      const source =
+        shell?.threads.find((thread) => thread.id === threadId) ??
+        shell?.archivedThreads.find((thread) => thread.id === threadId);
+      if (!source) return;
+      const viewed = registry.get(viewedThreadAtom);
+      const wokeAt =
+        viewed?.environmentId === destination && viewed.threadId === threadId
+          ? viewed.wokeAt
+          : null;
+      const updatedAt = DateTime.formatIso(source.updatedAt);
+      const visitedAt = wokeAt && Date.parse(wokeAt) > Date.parse(updatedAt) ? wokeAt : updatedAt;
+      if (source.lastVisitedAt === undefined) {
+        markLocalVisit({ environmentId: destination, threadId }, visitedAt);
+        return;
+      }
+      const result = await threadCommands.visit.run(registry, {
+        environmentId: destination,
+        input: { threadId, visitedAt, opened: false },
+      });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+    },
+    observeScope: (scope: AuthEnvironmentScope, onChange: (allowed: boolean) => void) => {
+      const destination = environmentId;
+      return observeAvailability(
+        Atom.make((get) => {
+          if (destination === null) return false;
+          const result = get(sessions.sessionStateAtom(destination));
+          const session = get(sessions.sessionStateValueAtom(destination));
+          return (
+            result._tag !== "Failure" && session !== null && sessionGrantsScope(session, scope)
+          );
+        }),
+        onChange,
+      );
+    },
+    observePermission: (method: string, input: unknown, onChange: (allowed: boolean) => void) => {
+      const destination = requireEnvironment();
+      if (!services.some((service) => service.method === method))
+        throw new Error(`Unknown service: ${method}`);
+      return observeAvailability(
+        createCommandPermissions(runtime, method).permissionAtom(destination, input),
+        onChange,
+      );
+    },
     services,
     setPasswordPrompt: passwords.setHandler,
     cloudIdentity: () => run(cloud.identity()),
@@ -645,6 +799,7 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
           ),
         );
         if (!exists) {
+          clearViewedThread();
           for (const stop of stops) stop();
           stops.clear();
           stopThread = undefined;
@@ -1142,6 +1297,7 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
       if (result.value._tag === "error") throw new Error(result.value.message);
     },
     close: () => {
+      clearViewedThread();
       closed = true;
       passwords.close();
       for (const stop of stops) stop();

@@ -1,5 +1,11 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
+import {
+  onFocus as onTerminalFocus,
+  onBlur as onTerminalBlur,
+  useKeyboard,
+  useRenderer,
+  useTerminalDimensions,
+} from "@opentui/solid";
 import { batch, createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import {
   CommandId,
@@ -7,6 +13,7 @@ import {
   WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
   ThreadId,
+  type ProviderInstanceId,
   isListedThreadLineage,
   type OrchestrationV2Command,
   type OrchestrationV2ThreadShell,
@@ -17,7 +24,9 @@ import * as DateTime from "effect/DateTime";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import type { TuiClient, TuiSnapshot } from "./runtime/client.ts";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
-import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
+import { effectiveSnoozed, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
+import { toServerClock } from "@t3tools/client-runtime/clock";
+import { isThreadWorking } from "@t3tools/client-runtime/state/thread-inbox";
 import {
   sortActiveThreadsByOrderKey,
   sortPinnedThreadsByOrderKey,
@@ -67,7 +76,7 @@ type Modal =
   | { kind: "secret"; description: string; resolve: (value: string | null) => void }
   | { kind: "text"; title: string; content: string; language?: string | undefined }
   | { kind: "image"; label: string; resource: AssetResource; environmentId: string | null };
-type ThreadFilter = "active" | "all" | "settled" | "snoozed" | "archived";
+type ThreadFilter = "active" | "working" | "all" | "settled" | "snoozed" | "archived";
 const destinations: { area: Area; title: string; shortcut: string }[] = [
   { area: "chat", title: "Threads", shortcut: "1" },
   { area: "workspace", title: "Workspace", shortcut: "2" },
@@ -81,6 +90,9 @@ const destinations: { area: Area; title: string; shortcut: string }[] = [
 export function App(props: { client: TuiClient | null; demo?: boolean; onExit: () => void }) {
   const dimensions = useTerminalDimensions();
   const renderer = useRenderer();
+  const [terminalFocused, setTerminalFocused] = createSignal(true);
+  onTerminalFocus(() => setTerminalFocused(true));
+  onTerminalBlur(() => setTerminalFocused(false));
   const capabilities = createTerminalCapabilities(renderer);
   const [iconPreference, setIconPreference] = createSignal<IconMode>(
     props.client?.preferences().icons ?? "auto",
@@ -96,6 +108,10 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   });
   const [state, setState] = createSignal<TuiSnapshot | null>(props.client?.snapshot() ?? null);
   const [area, setArea] = createSignal<Area>("chat");
+  const [settingsProviderTarget, setSettingsProviderTarget] = createSignal<{
+    environmentId: string;
+    instanceId: ProviderInstanceId;
+  }>();
   const [focus, setFocus] = createSignal<"sidebar" | "main" | "workspace">("main");
   const [sidebar, setSidebar] = createSignal(true);
   const [workspace, setWorkspace] = createSignal(false);
@@ -158,10 +174,15 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
     ).values(),
   ]);
   const [snoozeRevision, setSnoozeRevision] = createSignal(0);
+  function serverNow() {
+    const now = DateTime.toEpochMillis(DateTime.nowUnsafe());
+    const id = environment();
+    return DateTime.makeUnsafe(id ? toServerClock(id, now) : now);
+  }
   // Schedule a single wake at the next snooze deadline without repainting on a clock interval.
   createEffect(() => {
     snoozeRevision();
-    const now = DateTime.toEpochMillis(DateTime.nowUnsafe());
+    const now = DateTime.toEpochMillis(serverNow());
     const deadlines = allThreads().flatMap((entry) =>
       entry.snoozedUntil && DateTime.toEpochMillis(entry.snoozedUntil) > now
         ? [DateTime.toEpochMillis(entry.snoozedUntil)]
@@ -186,6 +207,19 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   });
   const thread = () => state()?.thread?.thread;
   const shellThread = () => allThreads().find((entry) => entry.id === state()?.selectedThreadId);
+  // Only the visible conversation in the focused terminal owns server visit tracking.
+  createEffect(() => {
+    snoozeRevision();
+    const id = environment();
+    const viewed = terminalFocused() && area() === "chat" ? state()?.selectedThreadId : null;
+    const source = viewed ? shellThread() : null;
+    const wokeAt =
+      id && source
+        ? threadWokeAt(presentThreadShell(id, source), { now: DateTime.formatIso(serverNow()) })
+        : null;
+    props.client?.setViewedThread(viewed ?? null, wokeAt);
+  });
+  onCleanup(() => props.client?.setViewedThread(null));
   const cwd = () => thread()?.worktreePath ?? project()?.workspaceRoot;
   const showSidebar = () => sidebar() && dimensions().width >= 86;
   const showWorkspace = () => workspace() && area() === "chat" && dimensions().width >= 132;
@@ -296,19 +330,10 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
       if (approved) props.onExit();
     });
   }
-  function visitThread(id: string, opened: boolean) {
-    return request(client(), ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
-      type: "thread.visit",
-      commandId: commandId(),
-      threadId: ThreadId.make(id),
-      visitedAt: DateTime.formatIso(DateTime.nowUnsafe()),
-      opened,
-    });
-  }
   function openThread(id: string) {
     if (id === state()?.selectedThreadId && area() === "chat") {
       setFocus("main");
-      void run(() => visitThread(id, false));
+      void run(() => client().acknowledgeThread(id));
       return;
     }
     const destination = state()?.environmentId;
@@ -317,16 +342,17 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
       client().selectThread(id);
       setArea("chat");
       setFocus("main");
-      await visitThread(id, true);
     });
   }
   function openArea(next: Area) {
     if (next === area()) {
+      setSettingsProviderTarget(undefined);
       setFocus("main");
       return;
     }
     void beforeNavigate().then((approved) => {
       if (approved) {
+        setSettingsProviderTarget(undefined);
         setArea(next);
         setFocus("main");
       }
@@ -975,6 +1001,18 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
       setModal({ kind: "image", resource, label, environmentId: state()?.environmentId ?? null }),
     openThread,
     openArea,
+    openProviderSettings: (instanceId) => {
+      const id = environment();
+      if (!id) return;
+      const check = scope();
+      void run(async () => {
+        if (!(await beforeNavigate())) return;
+        check();
+        setSettingsProviderTarget({ environmentId: id, instanceId });
+        setArea("settings");
+        setFocus("main");
+      });
+    },
     openFile,
     showChanges,
     chooseModel,
@@ -1093,7 +1131,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   function shortcuts() {
     ui.text(
       "Keyboard shortcuts",
-      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.\n\nThread colours and symbols:\nBlue ◌ Working\nPurple ? Needs input\nAmber △ Approval · ! Usage/budget limit\nPink @ Guest request\nGreen ✓ Done\nYellow ◷ Woken\nRed ! Failed · credentials/provider errors\nGrey ⊙ Waiting on related/background work · · Idle · ■ Stopped\nPins appear separately at the right of each row.",
+      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.\n\nThread colours and symbols:\nBlue ◌ Working\nPurple ? Needs input\nAmber △ Approval · ! Usage/budget limit\nPink @ Guest request\nGreen ✓ Done\nYellow ◷ Woken\nRed ! Failed · credentials/provider errors\nGrey ⊙ Waiting on related/background work\nNormal text: Ready/already seen (no status icon)\nPins appear separately at the right of each row.",
     );
   }
   function matches(entry: OrchestrationV2ThreadShell) {
@@ -1114,21 +1152,23 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
       currentEnvironment !== null &&
       currentEnvironment !== undefined &&
       effectiveSnoozed(presentThreadShell(currentEnvironment, entry), {
-        now: DateTime.formatIso(DateTime.nowUnsafe()),
+        now: DateTime.formatIso(serverNow()),
       });
     if (filter() === "snoozed") return snoozed;
     if (snoozed) return false;
     if (filter() === "settled") return entry.settledOverride === "settled";
+    if (filter() === "working")
+      return (
+        currentEnvironment != null && isThreadWorking(presentThreadShell(currentEnvironment, entry))
+      );
     return entry.settledOverride !== "settled";
   }
   function threadAppearance(entry: OrchestrationV2ThreadShell) {
     snoozeRevision();
     const id = environment();
     return threadStatusPresentation(
-      threadStatus(
-        id ? presentThreadShell(id, entry) : null,
-        DateTime.formatIso(DateTime.nowUnsafe()),
-      ),
+      threadStatus(id ? presentThreadShell(id, entry) : null, DateTime.formatIso(serverNow())),
+      state()?.selectedThreadId === entry.id,
     );
   }
   const rows = createMemo(() => {
@@ -1195,7 +1235,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   function filterPicker() {
     choose(
       "Show threads",
-      (["active", "all", "settled", "snoozed", "archived"] as const).map((value) => ({
+      (["active", "working", "all", "settled", "snoozed", "archived"] as const).map((value) => ({
         title: value[0]!.toUpperCase() + value.slice(1),
         run: () => {
           setFilter(value);
@@ -1492,6 +1532,11 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
                         ui={ui}
                         focused={activeFocus() === "main"}
                         onFocus={() => setFocus("main")}
+                        initialProviderId={
+                          settingsProviderTarget()?.environmentId === environment()
+                            ? settingsProviderTarget()?.instanceId
+                            : undefined
+                        }
                       />
                     </Show>
                     <Show when={area() === "pull-requests"}>

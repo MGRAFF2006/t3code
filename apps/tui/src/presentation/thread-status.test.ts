@@ -14,7 +14,7 @@ import * as DateTime from "effect/DateTime";
 import { threadStatus } from "./thread-status.ts";
 
 it.each([
-  { name: "new thread", changes: { latestRunId: null }, expected: "idle" },
+  { name: "new thread", changes: { latestRunId: null }, expected: "ready" },
   ...(["queued", "preparing", "starting", "running", "waiting"] as const).map((status) => ({
     name: status,
     changes: { status },
@@ -44,12 +44,12 @@ it.each([
       status: "completed",
       pendingBackgroundTasks: [{ taskId: "monitor", kind: "monitor" }],
     },
-    expected: "done",
+    expected: "ready",
   },
   {
     name: "completed despite earlier error",
     changes: { status: "completed", lastError: "Old error" },
-    expected: "done",
+    expected: "ready",
   },
   {
     name: "missing provider credential",
@@ -68,7 +68,7 @@ it.each([
   ...(["interrupted", "cancelled", "rolled_back"] as const).map((status) => ({
     name: status,
     changes: { status },
-    expected: "stopped",
+    expected: "ready",
   })),
   ...(["command", "user_input", "auth_refresh"] as const).map((kind) => ({
     name: `running with ${kind}`,
@@ -78,6 +78,37 @@ it.each([
     },
     expected: kind === "auth_refresh" ? "working" : kind === "user_input" ? "input" : "approval",
   })),
+  {
+    name: "unseen completion",
+    changes: { status: "completed", lastVisitedAt: DateTime.makeUnsafe("2026-06-19T23:59:00Z") },
+    expected: "done",
+  },
+  {
+    name: "completion cleared by visit",
+    changes: { status: "completed", lastVisitedAt: v2Now },
+    expected: "ready",
+  },
+  {
+    name: "dated failure cleared by visit",
+    changes: { status: "failed", lastVisitedAt: v2Now },
+    expected: "ready",
+  },
+  {
+    name: "undated failed run remains after visit",
+    changes: {
+      status: "failed",
+      latestRunCompletedAt: null,
+      latestRunStartedAt: null,
+      latestRunRequestedAt: null,
+      lastVisitedAt: v2Now,
+    },
+    expected: "failed",
+  },
+  {
+    name: "usage limit remains after visit",
+    changes: { status: "failed", lastErrorClass: "usage_limit", lastVisitedAt: v2Now },
+    expected: "limited",
+  },
   {
     name: "guest request after completion",
     changes: { status: "completed", pendingGuestMessageCount: 1 },
@@ -95,14 +126,14 @@ it.each([
   ...(
     [
       { name: "unseen snooze wake", changes: {}, expected: "woken" },
-      { name: "acknowledged wake", changes: { lastVisitedAt: v2Now }, expected: "done" },
-      { name: "settled wake", changes: { settledOverride: "settled" }, expected: "done" },
+      { name: "acknowledged wake", changes: { lastVisitedAt: v2Now }, expected: "ready" },
+      { name: "settled wake", changes: { settledOverride: "settled" }, expected: "ready" },
       { name: "active work after wake", changes: { status: "running" }, expected: "working" },
       { name: "failure after wake", changes: { status: "failed" }, expected: "failed" },
       {
         name: "future snooze",
         changes: { snoozedUntil: DateTime.makeUnsafe("2026-06-21T00:00:00Z") },
-        expected: "done",
+        expected: "ready",
       },
     ] satisfies Array<{
       name: string;
