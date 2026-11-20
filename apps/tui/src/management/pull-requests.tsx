@@ -871,9 +871,12 @@ export function PullRequestsPanel(props: FeatureProps) {
                 focused={props.focused && !props.ui.modal() && pane() === "list"}
                 onMouseDown={() => setPane("list")}
                 backgroundColor={theme.background}
+                focusedBackgroundColor={theme.background}
                 textColor={theme.text}
+                focusedTextColor={theme.text}
                 descriptionColor={theme.textMuted}
                 selectedTextColor={theme.primary}
+                selectedDescriptionColor={theme.text}
                 selectedBackgroundColor={theme.backgroundElement}
                 showScrollIndicator
               />

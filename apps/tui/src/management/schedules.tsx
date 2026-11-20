@@ -477,9 +477,12 @@ export function SchedulesPanel(props: FeatureProps) {
             onSelect={taskActions}
             onMouseDown={() => setPane("list")}
             backgroundColor={theme.background}
+            focusedBackgroundColor={theme.background}
             textColor={theme.text}
+            focusedTextColor={theme.text}
             descriptionColor={theme.textMuted}
             selectedTextColor={theme.primary}
+            selectedDescriptionColor={theme.text}
             selectedBackgroundColor={theme.backgroundElement}
             showScrollIndicator
           />

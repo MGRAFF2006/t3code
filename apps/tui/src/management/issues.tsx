@@ -660,9 +660,12 @@ export function IssuesPanel(props: FeatureProps) {
             onMouseDown={() => setPane("list")}
             focused={props.focused && !props.ui.modal() && pane() === "list"}
             backgroundColor={theme.background}
+            focusedBackgroundColor={theme.background}
             textColor={theme.text}
+            focusedTextColor={theme.text}
             descriptionColor={theme.textMuted}
             selectedTextColor={theme.primary}
+            selectedDescriptionColor={theme.text}
             selectedBackgroundColor={theme.backgroundElement}
             showScrollIndicator
           />

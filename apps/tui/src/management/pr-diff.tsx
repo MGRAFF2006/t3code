@@ -338,8 +338,11 @@ export function PullRequestDiffPanel(
           onSelect={() => setPane("diff")}
           onMouseDown={() => setPane("list")}
           backgroundColor={theme.background}
+          focusedBackgroundColor={theme.background}
           textColor={theme.text}
+          focusedTextColor={theme.text}
           selectedTextColor={theme.primary}
+          selectedDescriptionColor={theme.text}
           selectedBackgroundColor={theme.backgroundElement}
           showScrollIndicator
         />
