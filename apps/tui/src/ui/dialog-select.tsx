@@ -10,6 +10,7 @@ import { moveSelection, reconcileSelection, revealSelectionOffset } from "./sele
 export interface DialogSelectOption<T> {
   title: string;
   color?: string;
+  indicator?: { label: string; color: string } | undefined;
   value: T;
   description?: string | undefined;
   category?: string | undefined;
@@ -176,6 +177,13 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                 >
                   {option.title}
                 </text>
+                <Show when={option.indicator}>
+                  {(indicator) => (
+                    <text selectable={false} height={1} flexShrink={0} fg={indicator().color}>
+                      {indicator().label}
+                    </text>
+                  )}
+                </Show>
                 <Show when={option.category}>
                   <text
                     selectable={false}

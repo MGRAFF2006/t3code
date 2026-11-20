@@ -6,6 +6,11 @@ import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import * as DateTime from "effect/DateTime";
 import { toServerClock } from "@t3tools/client-runtime/clock";
 import { DialogSelect } from "./dialog-select.tsx";
+import {
+  createTerminalActivity,
+  terminalActivityLabel,
+} from "../presentation/terminal-activity.ts";
+import { theme } from "../theme/index.ts";
 
 export function ThreadPicker(props: {
   client: TuiClient | null;
@@ -17,6 +22,7 @@ export function ThreadPicker(props: {
   const environmentId = createMemo(() => props.state()?.environmentId);
   const selectedThreadId = createMemo(() => props.state()?.selectedThreadId);
   const projects = createMemo(() => props.state()?.shell?.projects);
+  const activity = createTerminalActivity(props.state);
   const projectTitles = createMemo(
     () => new Map(projects()?.map((project) => [project.id, project.title])),
   );
@@ -41,6 +47,9 @@ export function ThreadPicker(props: {
         title: `${status.symbol} ${row.thread.title}`,
         color: status.color,
         value: row.thread.id,
+        indicator: activity().has(row.thread.id)
+          ? { label: terminalActivityLabel(activity().get(row.thread.id)!), color: theme.error }
+          : undefined,
         category: row.source === "message" ? "In messages" : "Threads",
         description: [projectTitles().get(row.thread.projectId), row.thread.branch, row.hint]
           .filter(Boolean)

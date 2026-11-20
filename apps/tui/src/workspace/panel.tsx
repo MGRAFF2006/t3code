@@ -11,6 +11,11 @@ import { GitPanel } from "./git.tsx";
 import { DevicesPanel } from "./devices.tsx";
 import { TerminalsPanel } from "./terminals.tsx";
 import { reduceStatus, workspaceRoot, type WorkspaceStatus } from "./logic.ts";
+import {
+  createTerminalActivity,
+  terminalActivityLabel,
+} from "../presentation/terminal-activity.ts";
+import { TerminalActivity } from "../ui/terminal-activity.tsx";
 
 export type WorkspaceTab = "changes" | "files" | "git" | "browser" | "terminals" | "devices";
 const tabs = [
@@ -38,6 +43,8 @@ export function WorkspacePanel(
   const environmentId = createMemo(() => props.state()?.environmentId);
   const connection = createMemo(() => props.state()?.connection);
   const mutation = createMemo(() => props.state()?.workspaceMutationId);
+  const terminalActivity = createTerminalActivity(props.state);
+  const terminalCount = () => terminalActivity().get(props.state()?.selectedThreadId ?? "") ?? 0;
 
   createEffect(
     on(
@@ -138,16 +145,34 @@ export function WorkspacePanel(
               <text
                 selectable={false}
                 flexShrink={0}
-                fg={tab() === entry.id ? theme.primary : theme.textMuted}
+                fg={
+                  entry.id === "terminals" && terminalCount() > 0
+                    ? theme.error
+                    : tab() === entry.id
+                      ? theme.primary
+                      : theme.textMuted
+                }
                 onMouseDown={() => {
                   props.onFocus();
                   setTab(entry.id);
                 }}
               >
                 {entry.title}
+                {entry.id === "terminals" && terminalCount() > 0
+                  ? ` ${terminalActivityLabel(terminalCount())}`
+                  : ""}
               </text>
             )}
           </For>
+        </Show>
+        <Show when={props.compact || dimensions().width < 104}>
+          <TerminalActivity
+            count={terminalCount()}
+            onOpen={() => {
+              props.onFocus();
+              setTab("terminals");
+            }}
+          />
         </Show>
         <text height={1} fg={theme.textMuted} flexGrow={1} flexShrink={1} minWidth={0} truncate>
           {status().local?.refName ?? ""}

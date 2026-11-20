@@ -57,7 +57,9 @@ import { threadSearchQuery } from "./presentation/thread-search.logic.ts";
 import { findForMessageMatch, foldSearchQuery } from "@t3tools/shared/paletteSearch";
 import type { Area, Choice, FieldFormOptions, UiController } from "./ui/controller.ts";
 import { ConversationPanel, type ThreadSearchTarget } from "./conversation/panel.tsx";
-import { WorkspacePanel } from "./workspace/panel.tsx";
+import { WorkspacePanel, type WorkspaceTab } from "./workspace/panel.tsx";
+import { TerminalActivity } from "./ui/terminal-activity.tsx";
+import { createTerminalActivity } from "./presentation/terminal-activity.ts";
 import {
   IssuesPanel,
   PullRequestsPanel,
@@ -132,7 +134,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   const [workspaceWidth, setWorkspaceWidth] = createSignal<number | null>(
     props.client?.preferences().workspaceWidth ?? null,
   );
-  const [workspaceTab, setWorkspaceTab] = createSignal<"changes" | "files" | "git">("changes");
+  const [workspaceTab, setWorkspaceTab] = createSignal<WorkspaceTab>("changes", { equals: false });
   const [openPath, setOpenPath] = createSignal<string | undefined>(undefined, { equals: false });
   const [openLine, setOpenLine] = createSignal(1);
   const [modal, setModalState] = createSignal<Modal | null>(null);
@@ -186,6 +188,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   });
   const shell = createMemo(() => state()?.shell);
   const environment = createMemo(() => state()?.environmentId);
+  const terminalActivity = createTerminalActivity(state);
   const allThreads = createMemo(() => [
     ...new Map(
       [...(shell()?.threads ?? []), ...(shell()?.archivedThreads ?? [])].map((entry) => [
@@ -497,6 +500,22 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
       setWorkspace(true);
       setFocus("workspace");
     } else openArea("workspace");
+  }
+  function showThreadTerminals(id: string) {
+    const destination = environment();
+    void run(async () => {
+      if (!(await beforeNavigate()) || environment() !== destination) return;
+      if (state()?.selectedThreadId !== id) client().selectThread(id);
+      setWorkspaceTab("terminals");
+      if (dimensions().width >= 132) {
+        setArea("chat");
+        setWorkspace(true);
+        setFocus("workspace");
+      } else {
+        setArea("workspace");
+        setFocus("main");
+      }
+    });
   }
   function openFile(path: string, line = 1) {
     if (dimensions().width >= 132 && area() !== "chat") {
@@ -1201,6 +1220,15 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
       },
       { title: "Open terminal", category: "Workspace", run: terminal },
       {
+        title: "Show thread terminals",
+        category: "Workspace",
+        run: () => {
+          const id = state()?.selectedThreadId;
+          if (id) showThreadTerminals(id);
+          else notify("Select a thread to view its terminals.");
+        },
+      },
+      {
         title: "Open workspace in environment editor",
         category: "Workspace",
         run: () => {
@@ -1246,7 +1274,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   function shortcuts() {
     ui.text(
       "Keyboard shortcuts",
-      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar (thread picker in narrow windows)\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nCtrl+A  Select all in the focused text box\n/requests  Focus approvals and questions\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.\n\nPanel widths: drag the dividers; right-click or use Ctrl+P → Panel widths.\n\nThread colours and symbols:\nBlue ◌ Working\nPurple ? Needs input\nAmber △ Approval · ! Usage/budget limit\nPink @ Guest request\nGreen ✓ Done\nYellow ◷ Woken\nRed ! Failed · credentials/provider errors\nGrey ⊙ Waiting on related/background work\nNormal text: Ready/already seen (no status icon)\nPins appear separately at the right of each row.",
+      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar (thread picker in narrow windows)\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nCtrl+A  Select all in the focused text box\n/requests  Focus approvals and questions\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.\n\nPanel widths: drag the dividers; right-click or use Ctrl+P → Panel widths.\n\nThread colours and symbols:\nBlue ◌ Working\nPurple ? Needs input\nAmber △ Approval · ! Usage/budget limit\nPink @ Guest request\nGreen ✓ Done\nYellow ◷ Woken\nRed ! Failed · credentials/provider errors\nRed ● Terminal command running (number = terminals)\nGrey ⊙ Waiting on related/background work\nNormal text: Ready/already seen (no status icon)\nPins appear separately at the right of each row.",
     );
   }
   function matches(entry: OrchestrationV2ThreadShell) {
@@ -1500,6 +1528,10 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
                           >
                             {entry.title}
                           </text>
+                          <TerminalActivity
+                            count={terminalActivity().get(entry.id) ?? 0}
+                            onOpen={() => showThreadTerminals(entry.id)}
+                          />
                           <Show when={entry.pinnedAt}>
                             <text selectable={false} width={2} flexShrink={0} fg={theme.textMuted}>
                               {` ${icon("pin")}`}
@@ -1636,6 +1668,13 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
                 {icon("git")} {thread()?.branch}
               </text>
             </Show>
+            <TerminalActivity
+              count={terminalActivity().get(state()?.selectedThreadId ?? "") ?? 0}
+              onOpen={() => {
+                const id = state()?.selectedThreadId;
+                if (id) showThreadTerminals(id);
+              }}
+            />
             <text selectable={false} fg={theme.textMuted} flexShrink={0} onMouseDown={views}>
               Views ▾
             </text>

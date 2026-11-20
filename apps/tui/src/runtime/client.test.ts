@@ -9,6 +9,12 @@ import * as Deferred from "effect/Deferred";
 import * as Layer from "effect/Layer";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Fiber from "effect/Fiber";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import {
+  EnvironmentRegistry,
+  AVAILABLE_CONNECTION_STATE,
+} from "@t3tools/client-runtime/connection";
+import type { SupervisorConnectionState } from "@t3tools/client-runtime/connection";
 import type { SshPasswordPrompt } from "@t3tools/ssh/auth";
 import * as ClientPlatform from "./platform.ts";
 import * as Option from "effect/Option";
@@ -16,12 +22,14 @@ import { Atom, AsyncResult } from "effect/reactivity";
 import * as ShellState from "@t3tools/client-runtime/state/shell";
 import * as ServerState from "@t3tools/client-runtime/state/server";
 import * as SessionState from "@t3tools/client-runtime/state/session";
+import * as TerminalState from "@t3tools/client-runtime/state/terminal";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import type {
   AuthSessionState,
   OrchestrationV2ThreadShell,
   ServerConfig,
   EnvironmentId as EnvironmentIdType,
+  TerminalSummary,
 } from "@t3tools/contracts";
 import * as ThreadState from "@t3tools/client-runtime/state/threads";
 import type { StartThreadTurnInput, VisitThreadInput } from "@t3tools/client-runtime/operations";
@@ -30,6 +38,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthProvidersManageScope,
   AuthSourceControlWriteScope,
+  AuthTerminalReadScope,
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
@@ -46,7 +55,7 @@ import {
 } from "../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures.ts";
 import * as RpcBridge from "../rpc/bridge.ts";
 import { ORCHESTRATION_V2_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
-import { createTuiClient } from "./client.ts";
+import { createTuiClient, type TuiSnapshot } from "./client.ts";
 
 describe("terminal client onboarding", () => {
   it.effect(
@@ -805,6 +814,256 @@ it.effect(
           releaseForeign();
           client.close();
           expect(() => client.setViewedThread(legacyThreadId)).not.toThrow();
+        }),
+      (directory) => Effect.promise(() => NodeFSP.rm(directory, { recursive: true })),
+    ),
+);
+
+it.effect(
+  "keeps terminal activity scoped to readable connected environments and clears stale metadata",
+  () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-tui-terminals-"))),
+      (configDir) =>
+        Effect.gen(function* () {
+          const firstId = EnvironmentId.make("terminal-first");
+          const secondId = EnvironmentId.make("terminal-second");
+          const firstConnection = yield* SubscriptionRef.make<SupervisorConnectionState>({
+            ...AVAILABLE_CONNECTION_STATE,
+            phase: "connected",
+          });
+          const secondConnection = yield* SubscriptionRef.make<SupervisorConnectionState>({
+            ...AVAILABLE_CONNECTION_STATE,
+            phase: "connected",
+          });
+          const platformFactory = ClientPlatform.createClientLayer;
+          using _platform = vi
+            .spyOn(ClientPlatform, "createClientLayer")
+            .mockImplementation(async (...args) => {
+              const original = await platformFactory(...args);
+              const registry = Layer.effect(
+                EnvironmentRegistry.EnvironmentRegistry,
+                Effect.gen(function* () {
+                  const service = yield* EnvironmentRegistry.EnvironmentRegistry;
+                  return {
+                    ...service,
+                    stateChanges: (id: EnvironmentIdType) =>
+                      id === firstId
+                        ? SubscriptionRef.changes(firstConnection)
+                        : id === secondId
+                          ? SubscriptionRef.changes(secondConnection)
+                          : service.stateChanges(id),
+                  };
+                }),
+              ).pipe(Layer.provide(original.layer));
+              return { ...original, layer: Layer.merge(original.layer, registry) };
+            });
+          let atomRegistry: import("effect/reactivity/AtomRegistry").AtomRegistry | undefined;
+          const shellFactory = ShellState.createEnvironmentShellAtoms;
+          const shell = Atom.make((get) => {
+            atomRegistry = get.registry;
+            return {
+              ...ShellState.EMPTY_SHELL_STATE,
+              snapshot: Option.some(v2ShellSnapshot),
+              status: "live" as const,
+            };
+          });
+          using _shell = vi
+            .spyOn(ShellState, "createEnvironmentShellAtoms")
+            .mockImplementation((runtime) => ({
+              ...shellFactory(runtime),
+              stateValueAtom: () => shell,
+              stateAtom: () => Atom.make((get) => AsyncResult.success(get(shell))),
+            }));
+          const grant = (allowed: boolean): AuthSessionState => ({
+            authenticated: true,
+            auth: {
+              policy: "remote-reachable",
+              bootstrapMethods: [],
+              sessionMethods: [],
+              sessionCookieName: "terminal-test",
+            },
+            scopes: allowed ? [AuthTerminalReadScope] : [],
+            permissions: allowed ? [AuthTerminalReadScope] : [],
+          });
+          const sessionValues = Atom.family((_id: EnvironmentIdType) =>
+            Atom.make(AsyncResult.success(grant(false))),
+          );
+          const sessionFactory = SessionState.createEnvironmentSessionAtoms;
+          using _sessions = vi
+            .spyOn(SessionState, "createEnvironmentSessionAtoms")
+            .mockImplementation((...args) => ({
+              ...sessionFactory(...args),
+              sessionStateAtom: sessionValues,
+              sessionStateValueAtom: (id) =>
+                Atom.make((get) => AsyncResult.getOrElse(get(sessionValues(id)), () => null)),
+            }));
+          const metadataValues = Atom.family((_id: EnvironmentIdType) =>
+            Atom.make<AsyncResult.AsyncResult<readonly TerminalSummary[], string>>(
+              AsyncResult.initial(),
+            ),
+          );
+          const metadataAtoms = Atom.family((id: EnvironmentIdType) =>
+            Atom.make((get) => get(metadataValues(id))),
+          );
+          const terminalFactory = TerminalState.createTerminalEnvironmentAtoms;
+          using _terminals = vi
+            .spyOn(TerminalState, "createTerminalEnvironmentAtoms")
+            .mockImplementation((...args) => ({
+              ...terminalFactory(...args),
+              metadata: ({ environmentId }) => metadataAtoms(environmentId),
+            }));
+          using _fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+            const url = new URL(
+              typeof input === "string" || input instanceof URL ? input : input.url,
+            );
+            if (url.pathname === "/api/auth/session") return Response.json(grant(false));
+            return Response.json({
+              environmentId: url.hostname.startsWith("second") ? secondId : firstId,
+              label: "Terminal fixture",
+              platform: { os: "linux", arch: "x64" },
+              serverVersion: "0.0.0-test",
+              orchestrationProtocolVersion: 0,
+              capabilities: {},
+            });
+          });
+          const other = yield* Effect.promise(() =>
+            createTuiClient({
+              configDir,
+              url: "http://second-terminal.invalid",
+              token: "test-second-terminal",
+            }),
+          );
+          other.close();
+          const client = yield* Effect.promise(() =>
+            createTuiClient({
+              configDir,
+              url: "http://first-terminal.invalid",
+              token: "test-first-terminal",
+            }),
+          );
+          yield* Effect.addFinalizer(() => Effect.sync(() => client.close()));
+          const awaitSnapshot = (predicate: (snapshot: TuiSnapshot) => boolean) =>
+            Effect.callback<void>((resume) => {
+              const stop = client.subscribe((value) => {
+                if (predicate(value)) resume(Effect.void);
+              });
+              return Effect.sync(stop);
+            });
+          yield* awaitSnapshot(
+            (value) =>
+              value.connection === "connected" &&
+              value.terminalMetadata?.error !== null &&
+              value.terminalMetadata?.error !== undefined,
+          );
+          if (!atomRegistry) throw new Error("Terminal fixture did not mount its shell");
+          const running: TerminalSummary = {
+            threadId: v2ThreadShell.id,
+            terminalId: "command",
+            cwd: "/repo",
+            worktreePath: null,
+            status: "running",
+            pid: 100,
+            exitCode: null,
+            exitSignal: null,
+            hasRunningSubprocess: true,
+            label: "Command",
+            updatedAt: "2026-06-20T00:00:00.000Z",
+          };
+          atomRegistry.set(metadataValues(firstId), AsyncResult.success([running]));
+          expect(client.snapshot().terminalMetadata?.terminals).toEqual([]);
+          atomRegistry.set(sessionValues(firstId), AsyncResult.success(grant(true)));
+          expect(client.snapshot().terminalMetadata).toEqual({
+            terminals: [running],
+            loading: false,
+            error: null,
+          });
+          atomRegistry.set(
+            metadataValues(firstId),
+            AsyncResult.waiting(AsyncResult.success([running])),
+          );
+          expect(client.snapshot().terminalMetadata).toEqual({
+            terminals: [running],
+            loading: false,
+            error: null,
+          });
+          atomRegistry.set(metadataValues(firstId), AsyncResult.success([running]));
+          atomRegistry.set(
+            sessionValues(firstId),
+            AsyncResult.waiting(AsyncResult.success(grant(true))),
+          );
+          expect(client.snapshot().terminalMetadata).toEqual({
+            terminals: [running],
+            loading: false,
+            error: null,
+          });
+          atomRegistry.set(sessionValues(firstId), AsyncResult.success(grant(true)));
+          atomRegistry.set(
+            metadataValues(firstId),
+            AsyncResult.success([{ ...running, hasRunningSubprocess: false }]),
+          );
+          expect(client.snapshot().terminalMetadata?.terminals[0]?.hasRunningSubprocess).toBe(
+            false,
+          );
+          atomRegistry.set(metadataValues(firstId), AsyncResult.success([]));
+          expect(client.snapshot().terminalMetadata).toEqual({
+            terminals: [],
+            loading: false,
+            error: null,
+          });
+          atomRegistry.set(
+            metadataValues(firstId),
+            AsyncResult.failure(Cause.fail("Metadata stream failed")),
+          );
+          expect(client.snapshot().terminalMetadata?.error).toContain("Metadata stream failed");
+          expect(client.snapshot().terminalMetadata?.terminals).toEqual([]);
+          atomRegistry.set(metadataValues(firstId), AsyncResult.success([running]));
+          expect(client.snapshot().terminalMetadata?.terminals).toEqual([running]);
+          yield* SubscriptionRef.set(firstConnection, {
+            ...AVAILABLE_CONNECTION_STATE,
+            phase: "backoff" as const,
+          });
+          yield* awaitSnapshot(
+            (value) =>
+              value.connection === "backoff" &&
+              value.terminalMetadata?.loading === false &&
+              value.terminalMetadata.terminals.length === 0,
+          );
+          atomRegistry.set(metadataValues(firstId), AsyncResult.initial());
+          yield* SubscriptionRef.set(firstConnection, {
+            ...AVAILABLE_CONNECTION_STATE,
+            phase: "connected" as const,
+            generation: 2,
+          });
+          yield* awaitSnapshot(
+            (value) => value.connection === "connected" && value.terminalMetadata?.loading === true,
+          );
+          atomRegistry.set(metadataValues(firstId), AsyncResult.success([running]));
+          expect(client.snapshot().terminalMetadata?.terminals).toEqual([running]);
+          atomRegistry.set(sessionValues(firstId), AsyncResult.success(grant(false)));
+          expect(client.snapshot().terminalMetadata?.terminals).toEqual([]);
+          expect(client.snapshot().terminalMetadata?.error).not.toBeNull();
+          atomRegistry.set(sessionValues(firstId), AsyncResult.success(grant(true)));
+          expect(client.snapshot().terminalMetadata?.terminals).toEqual([running]);
+          yield* Effect.promise(() => client.selectEnvironment(secondId));
+          yield* awaitSnapshot(
+            (value) =>
+              value.environmentId === secondId &&
+              value.connection === "connected" &&
+              !!value.terminalMetadata?.error,
+          );
+          expect(client.snapshot().terminalMetadata?.terminals).toEqual([]);
+          atomRegistry.set(
+            metadataValues(firstId),
+            AsyncResult.success([{ ...running, label: "Wrong environment" }]),
+          );
+          expect(client.snapshot().terminalMetadata?.terminals).toEqual([]);
+          atomRegistry.set(sessionValues(secondId), AsyncResult.success(grant(true)));
+          atomRegistry.set(
+            metadataValues(secondId),
+            AsyncResult.success([{ ...running, terminalId: "second" }]),
+          );
+          expect(client.snapshot().terminalMetadata?.terminals[0]?.terminalId).toBe("second");
         }),
       (directory) => Effect.promise(() => NodeFSP.rm(directory, { recursive: true })),
     ),

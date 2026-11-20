@@ -32,6 +32,8 @@ Sidebar search and **Ctrl+K** use T3's desktop matching for titles, projects, br
 
 Drag either sidebar's divider to resize it. For exact widths, right-click a divider, use **Ctrl+P → Panel widths**, or open **Settings → Terminal → Panel widths**. Widths are saved for this terminal client. Smaller windows temporarily constrain them to leave room for the conversation; expanding the window restores your preferred sizes. The right panel also supports automatic sizing. **Reset panel widths** restores both defaults.
 
+A red **●** on a thread, its header or the Terminals view means a command is running in one of its terminals; a number counts busy terminals. Click the indicator, or use **Ctrl+P → Show thread terminals**, to view its sessions. An idle shell has no red indicator. Activity follows the selected environment and clears when a command stops or terminal access is unavailable.
+
 | Shortcut | Action                                                                        |
 | -------- | ----------------------------------------------------------------------------- |
 | Ctrl+K   | Switch thread                                                                 |

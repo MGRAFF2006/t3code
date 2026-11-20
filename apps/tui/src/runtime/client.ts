@@ -39,6 +39,7 @@ import {
 import { createEnvironmentSessionAtoms } from "@t3tools/client-runtime/state/session";
 import { createServerEnvironmentAtoms } from "@t3tools/client-runtime/state/server";
 import { createThreadVisitTracker } from "@t3tools/client-runtime/state/thread-visits";
+import { createTerminalEnvironmentAtoms } from "@t3tools/client-runtime/state/terminal";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
 import {
@@ -84,6 +85,8 @@ import {
   type VcsStatusResult,
   type T3ProjectFile,
   type OrchestrationV2ThreadLaunchWorkspaceStrategy,
+  type TerminalSummary,
+  AuthTerminalReadScope,
 } from "@t3tools/contracts";
 import {
   resolveProjectSettings,
@@ -143,6 +146,11 @@ export interface TuiSnapshot {
   readonly shell: OrchestrationV2ShellSnapshot | null;
   readonly olderSettled?: {
     readonly remaining: number;
+    readonly loading: boolean;
+    readonly error: string | null;
+  };
+  readonly terminalMetadata?: {
+    readonly terminals: readonly TerminalSummary[];
     readonly loading: boolean;
     readonly error: string | null;
   };
@@ -240,6 +248,7 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
   const shellSnapshot = families.snapshotAtom;
   const threadCommands = createThreadEnvironmentAtoms(runtime, shellSnapshot);
   const sessions = createEnvironmentSessionAtoms(runtime);
+  const terminals = createTerminalEnvironmentAtoms(runtime);
   const localUploads = createLocalAttachmentUploads(runtime, registry);
   const auth = createAuthEnvironmentAtoms(runtime);
   const server = createServerEnvironmentAtoms(runtime, {
@@ -361,6 +370,7 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
     thread: null,
     hasMoreHistory: false,
     workspaceMutationId: null,
+    terminalMetadata: { terminals: [], loading: environmentId !== null, error: null },
   };
   const listeners = new Set<(value: TuiSnapshot) => void>();
   const stops = new Set<() => void>();
@@ -498,6 +508,44 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
         });
       else if (result._tag === "Failure") update({ error: Cause.pretty(result.cause) });
     });
+    const metadata = terminals
+      .metadata({ environmentId: currentEnvironmentId, input: null })
+      .pipe(Atom.setIdleTTL(0));
+    observe(
+      Atom.make((get): NonNullable<TuiSnapshot["terminalMetadata"]> => {
+        const connection = get(connectionAtom);
+        if (connection._tag === "Failure")
+          return { terminals: [], loading: false, error: Cause.pretty(connection.cause) };
+        if (connection._tag !== "Success" || connection.value.phase === "connecting")
+          return { terminals: [], loading: true, error: null };
+        if (connection.value.phase !== "connected")
+          return {
+            terminals: [],
+            loading: false,
+            error: "Terminal status is unavailable while disconnected.",
+          };
+        const session = get(sessions.sessionStateAtom(currentEnvironmentId));
+        if (session._tag === "Failure")
+          return { terminals: [], loading: false, error: Cause.pretty(session.cause) };
+        if (session._tag !== "Success") return { terminals: [], loading: true, error: null };
+        if (!sessionGrantsScope(session.value, AuthTerminalReadScope))
+          return {
+            terminals: [],
+            loading: false,
+            error: "Terminal access is not allowed for this connection.",
+          };
+        const result = get(metadata);
+        if (result._tag === "Failure")
+          return { terminals: [], loading: false, error: Cause.pretty(result.cause) };
+        // Live streams keep waiting=true after emitting authoritative values.
+        return result._tag === "Success"
+          ? { terminals: result.value, loading: false, error: null }
+          : { terminals: [], loading: true, error: null };
+      }),
+      (terminalMetadata) => {
+        if (environmentId === currentEnvironmentId) update({ terminalMetadata });
+      },
+    );
     observe(shellAtoms.stateValueAtom(currentEnvironmentId), (state) => {
       if (Option.isSome(state.error)) update({ error: state.error.value });
     });
@@ -697,6 +745,7 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
       error: null,
       shell: null,
       config: null,
+      terminalMetadata: { terminals: [], loading: true, error: null },
       selectedThreadId: null,
       thread: null,
       hasMoreHistory: false,

@@ -1,38 +1,30 @@
 import { scrollbarOptions } from "../ui/scroll.ts";
-import { WS_METHODS, type TerminalSummary } from "@t3tools/contracts";
-import { applyTerminalMetadataStreamEvent } from "@t3tools/client-runtime/state/terminal";
-import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
-import { request, subscribe } from "../rpc/request.ts";
+import { WS_METHODS } from "@t3tools/contracts";
+import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
+import { request } from "../rpc/request.ts";
 import { theme } from "../theme/index.ts";
 import { useActiveKeyboard } from "../ui/keyboard.ts";
 import type { WorkspaceContext } from "./types.ts";
 
 export function TerminalsPanel(props: WorkspaceContext & { visible: boolean }) {
-  const [terminals, setTerminals] = createSignal<readonly TerminalSummary[]>([]);
-  const [failure, setFailure] = createSignal("");
   const [selected, setSelected] = createSignal(0);
   const environment = createMemo(() => props.state()?.environmentId);
   const thread = createMemo(() => props.state()?.selectedThreadId);
+  const metadata = createMemo(() => props.state()?.terminalMetadata);
+  const connection = createMemo(() => props.state()?.connection);
+  const terminals = createMemo(() =>
+    connection() === "connected" && !metadata()?.error && !metadata()?.loading
+      ? (metadata()?.terminals.filter((value) => value.threadId === thread()) ?? [])
+      : [],
+  );
+  const failure = () =>
+    metadata()?.error ??
+    (connection() !== "connected" ? "Terminal status is unavailable while disconnected." : "");
   createEffect(() => {
     const destination = environment();
     const id = thread();
     if (!props.visible || !destination || !id) return;
-    setTerminals([]);
-    setFailure("");
     setSelected(0);
-    const stop = subscribe(
-      props.client,
-      WS_METHODS.subscribeTerminalMetadata,
-      {},
-      (event) => {
-        if (environment() !== destination || thread() !== id) return;
-        setTerminals((values) =>
-          applyTerminalMetadataStreamEvent(values, event).filter((value) => value.threadId === id),
-        );
-      },
-      (error) => setFailure(error.message),
-    );
-    onCleanup(stop);
   });
   function destination() {
     const environmentId = environment();
@@ -179,9 +171,12 @@ export function TerminalsPanel(props: WorkspaceContext & { visible: boolean }) {
               <text selectable={false} fg={theme.text}>
                 {value.label || value.terminalId}
               </text>
-              <text selectable={false} fg={theme.textMuted}>
+              <text
+                selectable={false}
+                fg={value.hasRunningSubprocess ? theme.error : theme.textMuted}
+              >
                 {value.status}
-                {value.hasRunningSubprocess ? " · Command running" : ""}
+                {value.hasRunningSubprocess ? " · ● Command running" : ""}
               </text>
               <text selectable={false} fg={theme.textMuted} truncate>
                 {value.cwd}
@@ -189,7 +184,10 @@ export function TerminalsPanel(props: WorkspaceContext & { visible: boolean }) {
             </box>
           )}
         </For>
-        <Show when={!terminals().length}>
+        <Show when={metadata()?.loading || !metadata()}>
+          <text fg={theme.textMuted}>Loading terminal status…</text>
+        </Show>
+        <Show when={metadata() && !metadata()?.loading && !failure() && !terminals().length}>
           <text fg={theme.textMuted} wrapMode="word">
             {thread()
               ? "No terminals in this thread. Open a terminal with N or Ctrl+T."
