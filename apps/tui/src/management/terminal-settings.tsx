@@ -2,8 +2,9 @@ import { createSignal, onCleanup } from "solid-js";
 import type { TuiPreferencesPatch } from "../runtime/preferences.ts";
 import { DEFAULT_TUI_PREFERENCES } from "../runtime/preferences.ts";
 import { editPanelWidths, resetPanelWidths } from "../ui/panel-widths.ts";
+import { chooseTerminalAppearance } from "../ui/appearance.ts";
 import type { FeatureProps } from "../ui/controller.ts";
-import { theme } from "../theme/index.ts";
+import { theme, themeMode } from "../theme/index.ts";
 import { Action, Section } from "./common.tsx";
 import { iconPreview, resolvedIconMode } from "../presentation/icons.ts";
 
@@ -16,13 +17,14 @@ export function createTerminalSettings(props: FeatureProps) {
   const entries = () => [
     {
       title: "Appearance",
-      value: preferences().theme === "dark" ? "Dark" : "Light",
-      description: "Use T3 Code's dark or light palette in this terminal.",
-      run: () =>
-        props.ui.choose("Terminal appearance", [
-          { title: "Dark", run: () => save({ theme: "dark" }) },
-          { title: "Light", run: () => save({ theme: "light" }) },
-        ]),
+      value:
+        preferences().theme === "system"
+          ? `System · ${themeMode() === "dark" ? "Dark" : "Light"}`
+          : preferences().theme === "dark"
+            ? "Dark"
+            : "Light",
+      description: "Choose Light or Dark, or follow this terminal with System.",
+      run: () => chooseTerminalAppearance(props),
     },
     {
       title: "Icons",
@@ -138,7 +140,7 @@ export function createTerminalSettings(props: FeatureProps) {
     {
       title: "Reset terminal preferences",
       description:
-        "Restore dark appearance, automatic icons, system time format, Enter to send, queued follow-ups, wrapping and unified diffs.",
+        "Restore System appearance, automatic icons, system time format, Enter to send, queued follow-ups, wrapping, unified diffs and default panel widths.",
       run: () =>
         props.ui.confirm(
           "Reset terminal preferences",

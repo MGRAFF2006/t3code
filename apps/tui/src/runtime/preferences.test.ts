@@ -22,6 +22,17 @@ describe("terminal preferences", () => {
           const credentialFile = NodePath.join(directory, "connections.json");
           const credentials = '{"version":1,"credentials":["test-credential"]}';
           yield* Effect.promise(() => NodeFSP.writeFile(credentialFile, credentials));
+          const fresh = yield* Effect.promise(() => createPreferences(directory));
+          expect(fresh.get().theme).toBe("system");
+          yield* Effect.promise(() =>
+            NodeFSP.writeFile(
+              NodePath.join(directory, "preferences.json"),
+              '{"version":1,"settings":{"icons":"plain"}}',
+            ),
+          );
+          const withoutAppearance = yield* Effect.promise(() => createPreferences(directory));
+          expect(withoutAppearance.get().theme).toBe("system");
+          expect(withoutAppearance.get().icons).toBe("plain");
           yield* Effect.promise(() =>
             NodeFSP.writeFile(
               NodePath.join(directory, "preferences.json"),
@@ -29,6 +40,7 @@ describe("terminal preferences", () => {
             ),
           );
           const first = yield* Effect.promise(() => createPreferences(directory));
+          expect(first.get().theme).toBe("dark");
           expect(first.get().timestampFormat).toBe("locale");
           expect(first.get().sidebarWidth).toBe(29);
           expect(first.get().workspaceWidth).toBeNull();
@@ -74,6 +86,17 @@ describe("terminal preferences", () => {
           const reset = yield* Effect.promise(() => createPreferences(directory));
           expect(reset.get().workspaceWidth).toBeNull();
           expect(reset.get().sidebarWidth).toBe(44);
+          yield* Effect.promise(() => reset.update({ theme: "system" }));
+          const automatic = yield* Effect.promise(() => createPreferences(directory));
+          expect(automatic.get().theme).toBe("system");
+          yield* Effect.promise(() => automatic.update({ theme: "dark" }));
+          const manual = yield* Effect.promise(() => createPreferences(directory));
+          expect(manual.get().theme).toBe("dark");
+          expect(manual.get().sidebarWidth).toBe(44);
+          expect(manual.get().wordWrap).toBe(false);
+          expect(yield* Effect.promise(() => NodeFSP.readFile(credentialFile, "utf8"))).toBe(
+            credentials,
+          );
         }),
       ),
   );

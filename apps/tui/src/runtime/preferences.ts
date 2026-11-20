@@ -21,8 +21,8 @@ const Preferences = Schema.Struct({
   icons: Schema.Literals(["auto", "nerd", "plain"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("auto")),
   ),
-  theme: Schema.Literals(["dark", "light"]).pipe(
-    Schema.withDecodingDefault(Effect.succeed("dark")),
+  theme: Schema.Literals(["system", "light", "dark"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("system")),
   ),
   sendShortcut: Schema.Literals(["enter", "ctrl-s"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("enter")),

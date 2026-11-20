@@ -78,6 +78,8 @@ Capabilities and permissions come from the destination environment and provider.
 
 ## Graphics and newer terminals
 
+**Settings → Terminal → Appearance**, or **Ctrl+P → Terminal appearance**, offers **System**, **Light** and **Dark**. System follows the local terminal emulator's reported light/dark mode and updates when it changes; it does not depend on the operating system or remote server's theme. If the terminal cannot report its appearance, System uses Dark. Light and Dark stay fixed until you change them. The choice is saved in this terminal client's preferences; existing manual choices are preserved.
+
 Settings → Terminal → **Icons** offers Auto, Nerd Font and Plain. Auto uses the bundled symbol fallbacks in [Ghostty](https://ghostty.org/docs/config) and [WezTerm](https://wezterm.org/config/fonts.html), and plain symbols elsewhere. Choose Nerd Font if your terminal already has one. The setup menu includes a sample and an optional link to [font downloads](https://www.nerdfonts.com/font-downloads); select the installed font in your terminal settings. Remote connections use your local terminal’s font. `T3_TUI_ICONS=auto|nerd|plain` overrides the saved preference.
 
 The application remains native text UI. Images are expanded on demand using OpenTUI's detected **Kitty graphics** or **Sixel** support, with a block preview fallback. This works for conversation attachments, tool images and image files in the workspace. Signed assets are fetched from their owning environment with a streamed 20 MiB preview limit. Local attachments have T3's image/file/count limits and are read only when sent.

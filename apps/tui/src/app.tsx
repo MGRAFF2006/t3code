@@ -39,7 +39,10 @@ import { openInEnvironmentEditor } from "./features/editor.ts";
 import { projectActions } from "./projects/actions.ts";
 import { conversationSearch } from "./projects/search.ts";
 import { request } from "./rpc/request.ts";
-import { setTheme, theme } from "./theme/index.ts";
+import { theme } from "./theme/index.ts";
+import { createTerminalAppearance } from "./theme/appearance.ts";
+import { chooseTerminalAppearance } from "./ui/appearance.ts";
+import type { TuiPreferences } from "./runtime/preferences.ts";
 import { icon, setIconMode, type IconMode, type IconName } from "./presentation/icons.ts";
 import { selectableModels } from "./presentation/models.ts";
 import { threadStatus, threadStatusPresentation } from "./presentation/thread-status.ts";
@@ -102,6 +105,10 @@ const destinations: { area: Area; title: string; shortcut: string }[] = [
 export function App(props: { client: TuiClient | null; demo?: boolean; onExit: () => void }) {
   const dimensions = useTerminalDimensions();
   const renderer = useRenderer();
+  const [appearance, setAppearance] = createSignal<TuiPreferences["theme"]>(
+    props.client?.preferences().theme ?? DEFAULT_TUI_PREFERENCES.theme,
+  );
+  createTerminalAppearance(renderer, appearance);
   const [terminalFocused, setTerminalFocused] = createSignal(true);
   onTerminalFocus(() => setTerminalFocused(true));
   onTerminalBlur(() => setTerminalFocused(false));
@@ -162,7 +169,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   let pendingPassword: ((value: string | null) => void) | undefined;
   const unsubscribe = props.client?.subscribe(setState);
   const unsubscribePreferences = props.client?.subscribePreferences((value) => {
-    setTheme(value.theme);
+    setAppearance(value.theme);
     setIconPreference(value.icons);
     if (resizingPanel() !== "left") setSidebarWidth(value.sidebarWidth);
     if (resizingPanel() !== "right") setWorkspaceWidth(value.workspaceWidth);
@@ -1255,6 +1262,12 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
       { title: "Toggle sidebar", category: "Layout", run: toggleSidebar },
       { title: "Toggle workspace panel", category: "Layout", run: toggleWorkspace },
       {
+        title: "Terminal appearance",
+        category: "Layout",
+        description: "Light, Dark, or System to follow this terminal's appearance.",
+        run: () => chooseTerminalAppearance(feature()),
+      },
+      {
         title: "Panel widths",
         category: "Layout",
         description: "Resize the left sidebar and right panel in terminal columns.",
@@ -1274,7 +1287,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   function shortcuts() {
     ui.text(
       "Keyboard shortcuts",
-      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar (thread picker in narrow windows)\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nCtrl+A  Select all in the focused text box\n/requests  Focus approvals and questions\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.\n\nPanel widths: drag the dividers; right-click or use Ctrl+P → Panel widths.\n\nThread colours and symbols:\nBlue ◌ Working\nPurple ? Needs input\nAmber △ Approval · ! Usage/budget limit\nPink @ Guest request\nGreen ✓ Done\nYellow ◷ Woken\nRed ! Failed · credentials/provider errors\nRed ● Terminal command running (number = terminals)\nGrey ⊙ Waiting on related/background work\nNormal text: Ready/already seen (no status icon)\nPins appear separately at the right of each row.",
+      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar (thread picker in narrow windows)\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nCtrl+A  Select all in the focused text box\n/requests  Focus approvals and questions\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.\n\nAppearance: Ctrl+P → Terminal appearance (System / Light / Dark).\n\nPanel widths: drag the dividers; right-click or use Ctrl+P → Panel widths.\n\nThread colours and symbols:\nBlue ◌ Working\nPurple ? Needs input\nAmber △ Approval · ! Usage/budget limit\nPink @ Guest request\nGreen ✓ Done\nYellow ◷ Woken\nRed ! Failed · credentials/provider errors\nRed ● Terminal command running (number = terminals)\nGrey ⊙ Waiting on related/background work\nNormal text: Ready/already seen (no status icon)\nPins appear separately at the right of each row.",
     );
   }
   function matches(entry: OrchestrationV2ThreadShell) {
