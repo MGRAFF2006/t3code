@@ -48,6 +48,10 @@ import { FieldForm } from "./ui/field-form.tsx";
 import { Dialog } from "./ui/dialog.tsx";
 import { DialogSelect, type DialogSelectOption } from "./ui/dialog-select.tsx";
 import { ThreadPicker } from "./ui/thread-picker.tsx";
+import { PanelDivider } from "./ui/panel-divider.tsx";
+import { editPanelWidths, resetPanelWidths } from "./ui/panel-widths.ts";
+import { derivePanelLayout } from "./presentation/panel-layout.ts";
+import { DEFAULT_TUI_PREFERENCES } from "./runtime/preferences.ts";
 import { createThreadSearch, type ThreadSearchRow } from "./presentation/thread-search.ts";
 import { threadSearchQuery } from "./presentation/thread-search.logic.ts";
 import { findForMessageMatch, foldSearchQuery } from "@t3tools/shared/paletteSearch";
@@ -121,6 +125,13 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   const [focus, setFocus] = createSignal<"sidebar" | "main" | "workspace">("main");
   const [sidebar, setSidebar] = createSignal(true);
   const [workspace, setWorkspace] = createSignal(false);
+  const [resizingPanel, setResizingPanel] = createSignal<"left" | "right">();
+  const [sidebarWidth, setSidebarWidth] = createSignal(
+    props.client?.preferences().sidebarWidth ?? DEFAULT_TUI_PREFERENCES.sidebarWidth,
+  );
+  const [workspaceWidth, setWorkspaceWidth] = createSignal<number | null>(
+    props.client?.preferences().workspaceWidth ?? null,
+  );
   const [workspaceTab, setWorkspaceTab] = createSignal<"changes" | "files" | "git">("changes");
   const [openPath, setOpenPath] = createSignal<string | undefined>(undefined, { equals: false });
   const [openLine, setOpenLine] = createSignal(1);
@@ -151,6 +162,8 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   const unsubscribePreferences = props.client?.subscribePreferences((value) => {
     setTheme(value.theme);
     setIconPreference(value.icons);
+    if (resizingPanel() !== "left") setSidebarWidth(value.sidebarWidth);
+    if (resizingPanel() !== "right") setWorkspaceWidth(value.workspaceWidth);
   });
   props.client?.setPasswordPrompt(
     (prompt) =>
@@ -229,7 +242,17 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   });
   onCleanup(() => props.client?.setViewedThread(null));
   const cwd = () => thread()?.worktreePath ?? project()?.workspaceRoot;
-  const showSidebar = () => sidebar() && dimensions().width >= 86;
+  const panelLayout = createMemo(() =>
+    derivePanelLayout({
+      columns: dimensions().width,
+      sidebarOpen: sidebar(),
+      workspaceOpen: workspace(),
+      chat: area() === "chat",
+      sidebarWidth: sidebarWidth(),
+      workspaceWidth: workspaceWidth(),
+    }),
+  );
+  const showSidebar = () => panelLayout().showSidebar;
   const searching = () => foldSearchQuery(search()).length > 0;
   const threadSearch = createThreadSearch({
     client: () => props.client,
@@ -256,8 +279,21 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
       setFocus("sidebar");
     }
   }
-  const headerWidth = () => dimensions().width - (showSidebar() ? 29 : 0);
-  const showWorkspace = () => workspace() && area() === "chat" && dimensions().width >= 132;
+  const headerWidth = () => panelLayout().headerWidth;
+  const showWorkspace = () => panelLayout().showWorkspace;
+  function savePanelWidth(side: "left" | "right") {
+    if (!props.client || (side === "left" ? !showSidebar() : !showWorkspace())) return;
+    const width = side === "left" ? panelLayout().sidebarWidth : panelLayout().workspaceWidth;
+    void run(() =>
+      props.client!.updatePreferences(
+        side === "left" ? { sidebarWidth: width } : { workspaceWidth: width },
+      ),
+    );
+  }
+  function configurePanelWidths() {
+    if (!props.client) return notify("Connect a terminal client to save panel widths.");
+    editPanelWidths(feature());
+  }
   const activeFocus = () =>
     (focus() === "workspace" && !showWorkspace()) || (focus() === "sidebar" && !showSidebar())
       ? "main"
@@ -1191,6 +1227,13 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
       { title: "Toggle sidebar", category: "Layout", run: toggleSidebar },
       { title: "Toggle workspace panel", category: "Layout", run: toggleWorkspace },
       {
+        title: "Panel widths",
+        category: "Layout",
+        description: "Resize the left sidebar and right panel in terminal columns.",
+        run: configurePanelWidths,
+      },
+      { title: "Reset panel widths", category: "Layout", run: () => resetPanelWidths(feature()) },
+      {
         title: "Terminal capabilities",
         category: "Help",
         run: () => ui.text("Terminal capabilities", terminalCapabilitiesReport(capabilities())),
@@ -1203,7 +1246,7 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
   function shortcuts() {
     ui.text(
       "Keyboard shortcuts",
-      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar (thread picker in narrow windows)\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nCtrl+A  Select all in the focused text box\n/requests  Focus approvals and questions\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.\n\nThread colours and symbols:\nBlue ◌ Working\nPurple ? Needs input\nAmber △ Approval · ! Usage/budget limit\nPink @ Guest request\nGreen ✓ Done\nYellow ◷ Woken\nRed ! Failed · credentials/provider errors\nGrey ⊙ Waiting on related/background work\nNormal text: Ready/already seen (no status icon)\nPins appear separately at the right of each row.",
+      "Ctrl+P  Commands\nCtrl+K  Switch thread\nCtrl+N  New thread\nCtrl+B  Toggle sidebar (thread picker in narrow windows)\nCtrl+E  Toggle workspace panel\nCtrl+T  Open thread terminal (Ctrl+] returns)\nCtrl+A  Select all in the focused text box\n/requests  Focus approvals and questions\nAlt+1…7  Navigate sections\nF6  Move focus between panes\nCtrl+Q  Quit\n\nLists: arrows to select, Enter to open; mouse also works.\nForms: Tab changes field; arrows choose options; Ctrl+S or F2 saves.\nConversation shortcuts appear below the composer.\n\nPanel widths: drag the dividers; right-click or use Ctrl+P → Panel widths.\n\nThread colours and symbols:\nBlue ◌ Working\nPurple ? Needs input\nAmber △ Approval · ! Usage/budget limit\nPink @ Guest request\nGreen ✓ Done\nYellow ◷ Woken\nRed ! Failed · credentials/provider errors\nGrey ⊙ Waiting on related/background work\nNormal text: Ready/already seen (no status icon)\nPins appear separately at the right of each row.",
     );
   }
   function matches(entry: OrchestrationV2ThreadShell) {
@@ -1326,201 +1369,210 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
       <box flexDirection="row" flexGrow={1} minHeight={0}>
         <Show when={showSidebar()}>
           <box
-            width={29}
+            width={panelLayout().sidebarWidth}
             flexShrink={0}
+            flexDirection="row"
             backgroundColor={theme.sidebar}
-            paddingX={1}
-            onMouseDown={() => setFocus("sidebar")}
           >
-            <box height={2} flexShrink={0} flexDirection="row" gap={1}>
-              <text
-                selectable={false}
-                height={1}
-                flexGrow={1}
-                fg={theme.text}
-                onMouseDown={environments}
-              >
-                T3 Code ▾
-              </text>
+            <box flexGrow={1} minWidth={0} paddingLeft={1} onMouseDown={() => setFocus("sidebar")}>
+              <box height={2} flexShrink={0} flexDirection="row" gap={1}>
+                <text
+                  selectable={false}
+                  height={1}
+                  flexGrow={1}
+                  fg={theme.text}
+                  onMouseDown={environments}
+                >
+                  T3 Code ▾
+                </text>
+                <text
+                  selectable={false}
+                  height={1}
+                  flexShrink={0}
+                  fg={theme.textMuted}
+                  onMouseDown={(event) => {
+                    event.stopPropagation();
+                    toggleSidebar();
+                  }}
+                >
+                  Hide ‹
+                </text>
+              </box>
               <text
                 selectable={false}
                 height={1}
                 flexShrink={0}
                 fg={theme.textMuted}
-                onMouseDown={(event) => {
-                  event.stopPropagation();
-                  toggleSidebar();
-                }}
-              >
-                Hide ‹
-              </text>
-            </box>
-            <text
-              selectable={false}
-              height={1}
-              flexShrink={0}
-              fg={theme.textMuted}
-              truncate
-              onMouseDown={environments}
-            >
-              {state()?.label ?? (props.demo ? "Demo" : "Connect environment")}
-            </text>
-            <box height={1} flexShrink={0} marginTop={1}>
-              <text
-                selectable={false}
-                fg={theme.primary}
-                onMouseDown={() => newThread(project()?.id)}
-              >
-                {icon("add")} New thread ^N
-              </text>
-            </box>
-            <box height={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
-              <text fg={theme.text}>Threads</text>
-              <text selectable={false} fg={theme.textMuted} onMouseDown={filterPicker}>
-                {searching() ? "all shelves" : `${filter()} ▾`}
-              </text>
-            </box>
-            <input
-              keyBindings={[{ name: "a", ctrl: true, action: "select-all" }]}
-              placeholder="Search threads…"
-              value={search()}
-              focused={activeFocus() === "sidebar" && !modal()}
-              onInput={(value) => {
-                setSearch(value);
-                setSelectedRow(0);
-                setSelectedSearchThread(undefined);
-              }}
-              backgroundColor={theme.sidebar}
-              textColor={theme.text}
-              focusedTextColor={theme.text}
-              cursorColor={theme.primary}
-            />
-            <Show when={searching() && (threadSearch().loading || threadSearch().error)}>
-              <text
-                height={1}
-                flexShrink={0}
                 truncate
-                fg={threadSearch().error ? theme.error : theme.textMuted}
+                onMouseDown={environments}
               >
-                {threadSearch().error ?? "Searching messages…"}
+                {state()?.label ?? (props.demo ? "Demo" : "Connect environment")}
               </text>
-            </Show>
-            <scrollbox
-              scrollbarOptions={scrollbarOptions()}
-              ref={(element) => {
-                sidebarScroll = element;
-              }}
-              flexGrow={1}
-              minHeight={0}
-            >
-              <For each={rows()}>
-                {(entry, index) => {
-                  const selected = () => state()?.selectedThreadId === entry.id;
-                  const status = createMemo(() => threadAppearance(entry));
-                  const result = () => (searching() ? searchRowsById().get(entry.id) : undefined);
-                  const cursor = () =>
-                    activeFocus() === "sidebar" && rows()[rowIndex()]?.id === entry.id;
-                  return (
-                    <box flexShrink={0}>
-                      <Show
-                        when={
-                          result()?.source === "message" &&
-                          threadSearch().rows[index() - 1]?.source !== "message"
-                        }
-                      >
-                        <text height={1} fg={theme.textMuted}>
-                          In messages
-                        </text>
-                      </Show>
-                      <box
-                        id={`thread-${entry.id}`}
-                        flexDirection="row"
-                        height={1}
-                        backgroundColor={
-                          selected() || cursor() ? theme.sidebarSelected : theme.sidebar
-                        }
-                        onMouseDown={(event) => {
-                          if (event.button === 2) threadActions(entry);
-                          else openSidebarThread(entry);
-                        }}
-                      >
-                        <text selectable={false} width={2} flexShrink={0} fg={status().color}>
-                          {status().symbol}
-                        </text>
-                        <text
-                          selectable={false}
-                          flexGrow={1}
-                          minWidth={0}
-                          height={1}
-                          truncate
-                          fg={status().color}
+              <box height={1} flexShrink={0} marginTop={1}>
+                <text
+                  selectable={false}
+                  fg={theme.primary}
+                  onMouseDown={() => newThread(project()?.id)}
+                >
+                  {icon("add")} New thread ^N
+                </text>
+              </box>
+              <box height={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
+                <text fg={theme.text}>Threads</text>
+                <text selectable={false} fg={theme.textMuted} onMouseDown={filterPicker}>
+                  {searching() ? "all shelves" : `${filter()} ▾`}
+                </text>
+              </box>
+              <input
+                keyBindings={[{ name: "a", ctrl: true, action: "select-all" }]}
+                placeholder="Search threads…"
+                value={search()}
+                focused={activeFocus() === "sidebar" && !modal()}
+                onInput={(value) => {
+                  setSearch(value);
+                  setSelectedRow(0);
+                  setSelectedSearchThread(undefined);
+                }}
+                backgroundColor={theme.sidebar}
+                textColor={theme.text}
+                focusedTextColor={theme.text}
+                cursorColor={theme.primary}
+              />
+              <Show when={searching() && (threadSearch().loading || threadSearch().error)}>
+                <text
+                  height={1}
+                  flexShrink={0}
+                  truncate
+                  fg={threadSearch().error ? theme.error : theme.textMuted}
+                >
+                  {threadSearch().error ?? "Searching messages…"}
+                </text>
+              </Show>
+              <scrollbox
+                scrollbarOptions={scrollbarOptions()}
+                ref={(element) => {
+                  sidebarScroll = element;
+                }}
+                flexGrow={1}
+                minHeight={0}
+              >
+                <For each={rows()}>
+                  {(entry, index) => {
+                    const selected = () => state()?.selectedThreadId === entry.id;
+                    const status = createMemo(() => threadAppearance(entry));
+                    const result = () => (searching() ? searchRowsById().get(entry.id) : undefined);
+                    const cursor = () =>
+                      activeFocus() === "sidebar" && rows()[rowIndex()]?.id === entry.id;
+                    return (
+                      <box flexShrink={0}>
+                        <Show
+                          when={
+                            result()?.source === "message" &&
+                            threadSearch().rows[index() - 1]?.source !== "message"
+                          }
                         >
-                          {entry.title}
-                        </text>
-                        <Show when={entry.pinnedAt}>
-                          <text selectable={false} width={2} flexShrink={0} fg={theme.textMuted}>
-                            {` ${icon("pin")}`}
+                          <text height={1} fg={theme.textMuted}>
+                            In messages
                           </text>
                         </Show>
-                      </box>
-                      <Show when={result()?.hint}>
-                        <text
-                          selectable={false}
+                        <box
+                          id={`thread-${entry.id}`}
+                          flexDirection="row"
                           height={1}
-                          truncate
-                          paddingLeft={2}
-                          fg={theme.textMuted}
+                          backgroundColor={
+                            selected() || cursor() ? theme.sidebarSelected : theme.sidebar
+                          }
                           onMouseDown={(event) => {
                             if (event.button === 2) threadActions(entry);
                             else openSidebarThread(entry);
                           }}
                         >
-                          {result()?.hint}
-                        </text>
-                      </Show>
-                    </box>
-                  );
-                }}
-              </For>
-              <Show when={rows().length === 0}>
-                <text fg={theme.textMuted} wrapMode="word" marginTop={1}>
-                  {searching()
-                    ? threadSearch().loading
-                      ? "Searching…"
-                      : "No matching threads."
-                    : `No ${filter()} threads. Start a thread or choose another filter.`}
-                </text>
-              </Show>
-              <Show
-                when={
-                  !searching() &&
-                  (filter() === "settled" || filter() === "all") &&
-                  (state()?.olderSettled?.remaining || state()?.olderSettled?.error)
-                }
-              >
-                <text
-                  selectable={false}
-                  fg={state()?.olderSettled?.error ? theme.error : theme.primary}
-                  wrapMode="word"
-                  onMouseDown={() => void run(() => client().loadOlderSettled())}
+                          <text selectable={false} width={2} flexShrink={0} fg={status().color}>
+                            {status().symbol}
+                          </text>
+                          <text
+                            selectable={false}
+                            flexGrow={1}
+                            minWidth={0}
+                            height={1}
+                            truncate
+                            fg={status().color}
+                          >
+                            {entry.title}
+                          </text>
+                          <Show when={entry.pinnedAt}>
+                            <text selectable={false} width={2} flexShrink={0} fg={theme.textMuted}>
+                              {` ${icon("pin")}`}
+                            </text>
+                          </Show>
+                        </box>
+                        <Show when={result()?.hint}>
+                          <text
+                            selectable={false}
+                            height={1}
+                            truncate
+                            paddingLeft={2}
+                            fg={theme.textMuted}
+                            onMouseDown={(event) => {
+                              if (event.button === 2) threadActions(entry);
+                              else openSidebarThread(entry);
+                            }}
+                          >
+                            {result()?.hint}
+                          </text>
+                        </Show>
+                      </box>
+                    );
+                  }}
+                </For>
+                <Show when={rows().length === 0}>
+                  <text fg={theme.textMuted} wrapMode="word" marginTop={1}>
+                    {searching()
+                      ? threadSearch().loading
+                        ? "Searching…"
+                        : "No matching threads."
+                      : `No ${filter()} threads. Start a thread or choose another filter.`}
+                  </text>
+                </Show>
+                <Show
+                  when={
+                    !searching() &&
+                    (filter() === "settled" || filter() === "all") &&
+                    (state()?.olderSettled?.remaining || state()?.olderSettled?.error)
+                  }
                 >
-                  {state()?.olderSettled?.loading
-                    ? "Loading earlier conversations…"
-                    : (state()?.olderSettled?.error ??
-                      `Load earlier settled threads (${state()?.olderSettled?.remaining})`)}
-                </text>
-              </Show>
-            </scrollbox>
-            <text
-              selectable={false}
-              height={1}
-              flexShrink={0}
-              fg={activeFocus() === "sidebar" ? theme.primary : theme.textMuted}
-              marginTop={1}
-              onMouseDown={palette}
-            >
-              {icon("commands")} Commands ^P
-            </text>
+                  <text
+                    selectable={false}
+                    fg={state()?.olderSettled?.error ? theme.error : theme.primary}
+                    wrapMode="word"
+                    onMouseDown={() => void run(() => client().loadOlderSettled())}
+                  >
+                    {state()?.olderSettled?.loading
+                      ? "Loading earlier conversations…"
+                      : (state()?.olderSettled?.error ??
+                        `Load earlier settled threads (${state()?.olderSettled?.remaining})`)}
+                  </text>
+                </Show>
+              </scrollbox>
+              <text
+                selectable={false}
+                height={1}
+                flexShrink={0}
+                fg={activeFocus() === "sidebar" ? theme.primary : theme.textMuted}
+                marginTop={1}
+                onMouseDown={palette}
+              >
+                {icon("commands")} Commands ^P
+              </text>
+            </box>
+            <PanelDivider
+              side="left"
+              width={panelLayout().sidebarWidth}
+              onResize={setSidebarWidth}
+              onDragChange={(active) => setResizingPanel(active ? "left" : undefined)}
+              onCommit={() => savePanelWidth("left")}
+              onConfigure={configurePanelWidths}
+            />
           </box>
         </Show>
         <box width={headerWidth()} flexGrow={1} flexShrink={1} minWidth={0}>
@@ -1739,24 +1791,34 @@ export function App(props: { client: TuiClient | null; demo?: boolean; onExit: (
                 <Show when={workspace() && area() === "chat"}>
                   <box
                     visible={showWorkspace()}
-                    width={showWorkspace() ? "38%" : 0}
-                    minWidth={showWorkspace() ? 42 : 0}
+                    width={panelLayout().workspaceWidth}
+                    minWidth={0}
                     flexShrink={0}
-                    border={["left"]}
-                    borderColor={activeFocus() === "workspace" ? theme.primary : theme.border}
+                    flexDirection="row"
                     onMouseDown={() => setFocus("workspace")}
                   >
-                    <WorkspacePanel
-                      client={connectedClient()}
-                      state={state}
-                      ui={ui}
-                      focused={activeFocus() === "workspace"}
-                      onFocus={() => setFocus("workspace")}
-                      initialTab={workspaceTab()}
-                      openPath={openPath()}
-                      openLine={openLine()}
-                      compact
+                    <PanelDivider
+                      side="right"
+                      active={activeFocus() === "workspace"}
+                      width={panelLayout().workspaceWidth}
+                      onResize={setWorkspaceWidth}
+                      onDragChange={(active) => setResizingPanel(active ? "right" : undefined)}
+                      onCommit={() => savePanelWidth("right")}
+                      onConfigure={configurePanelWidths}
                     />
+                    <box flexGrow={1} minWidth={0}>
+                      <WorkspacePanel
+                        client={connectedClient()}
+                        state={state}
+                        ui={ui}
+                        focused={activeFocus() === "workspace"}
+                        onFocus={() => setFocus("workspace")}
+                        initialTab={workspaceTab()}
+                        openPath={openPath()}
+                        openLine={openLine()}
+                        compact
+                      />
+                    </box>
                   </box>
                 </Show>
               </box>

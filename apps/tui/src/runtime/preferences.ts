@@ -11,6 +11,12 @@ import {
 } from "../connections/files.ts";
 
 const Preferences = Schema.Struct({
+  sidebarWidth: Schema.Int.check(Schema.isBetween({ minimum: 22, maximum: 1000 })).pipe(
+    Schema.withDecodingDefault(Effect.succeed(29)),
+  ),
+  workspaceWidth: Schema.NullOr(
+    Schema.Int.check(Schema.isBetween({ minimum: 42, maximum: 1000 })),
+  ).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   timestampFormat: TimestampFormat.pipe(Schema.withDecodingDefault(Effect.succeed("locale"))),
   icons: Schema.Literals(["auto", "nerd", "plain"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("auto")),

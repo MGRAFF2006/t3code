@@ -1,5 +1,7 @@
 import { createSignal, onCleanup } from "solid-js";
 import type { TuiPreferencesPatch } from "../runtime/preferences.ts";
+import { DEFAULT_TUI_PREFERENCES } from "../runtime/preferences.ts";
+import { editPanelWidths, resetPanelWidths } from "../ui/panel-widths.ts";
 import type { FeatureProps } from "../ui/controller.ts";
 import { theme } from "../theme/index.ts";
 import { Action, Section } from "./common.tsx";
@@ -122,6 +124,18 @@ export function createTerminalSettings(props: FeatureProps) {
         ]),
     },
     {
+      title: "Panel widths",
+      value: `${preferences().sidebarWidth} left · ${preferences().workspaceWidth ?? "auto"} right`,
+      description:
+        "Resize both sidebars in terminal columns. Drag their dividers or enter exact widths.",
+      run: () => editPanelWidths(props),
+    },
+    {
+      title: "Reset panel widths",
+      description: "Restore the default left width and automatic right width.",
+      run: () => resetPanelWidths(props),
+    },
+    {
       title: "Reset terminal preferences",
       description:
         "Restore dark appearance, automatic icons, system time format, Enter to send, queued follow-ups, wrapping and unified diffs.",
@@ -130,15 +144,7 @@ export function createTerminalSettings(props: FeatureProps) {
           "Reset terminal preferences",
           "Only this terminal client's preferences change.",
           async () => {
-            await props.client.updatePreferences({
-              theme: "dark",
-              icons: "auto",
-              timestampFormat: "locale",
-              sendShortcut: "enter",
-              followUpMode: "queue",
-              wordWrap: true,
-              diffView: "unified",
-            });
+            await props.client.updatePreferences(DEFAULT_TUI_PREFERENCES);
           },
           "Reset preferences",
         ),

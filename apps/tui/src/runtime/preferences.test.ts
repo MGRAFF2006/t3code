@@ -30,11 +30,17 @@ describe("terminal preferences", () => {
           );
           const first = yield* Effect.promise(() => createPreferences(directory));
           expect(first.get().timestampFormat).toBe("locale");
+          expect(first.get().sidebarWidth).toBe(29);
+          expect(first.get().workspaceWidth).toBeNull();
           const second = yield* Effect.promise(() => createPreferences(directory));
           const changes: string[] = [];
           const unsubscribe = first.subscribe((preferences) => changes.push(preferences.theme));
-          yield* Effect.promise(() => first.update({ theme: "light", timestampFormat: "12-hour" }));
-          yield* Effect.promise(() => second.update({ sendShortcut: "ctrl-s" }));
+          yield* Effect.promise(() =>
+            first.update({ theme: "light", timestampFormat: "12-hour", sidebarWidth: 44 }),
+          );
+          yield* Effect.promise(() =>
+            second.update({ sendShortcut: "ctrl-s", workspaceWidth: 67 }),
+          );
           yield* Effect.promise(() =>
             Promise.all([
               first.update({ wordWrap: false }),
@@ -51,6 +57,8 @@ describe("terminal preferences", () => {
             diffView: "split",
             followUpMode: "steer",
             timestampFormat: "12-hour",
+            sidebarWidth: 44,
+            workspaceWidth: 67,
           });
           expect(changes).toEqual(["dark", "light", "light", "light"]);
           expect(yield* Effect.promise(() => NodeFSP.readFile(credentialFile, "utf8"))).toBe(
@@ -62,6 +70,10 @@ describe("terminal preferences", () => {
               NodeFSP.stat(NodePath.join(directory, "preferences.json")),
             )).mode & 0o777,
           ).toBe(0o600);
+          yield* Effect.promise(() => reopened.update({ workspaceWidth: null }));
+          const reset = yield* Effect.promise(() => createPreferences(directory));
+          expect(reset.get().workspaceWidth).toBeNull();
+          expect(reset.get().sidebarWidth).toBe(44);
         }),
       ),
   );
@@ -85,6 +97,17 @@ describe("terminal preferences", () => {
           });
           expect(yield* Effect.promise(() => NodeFSP.readFile(filename, "utf8"))).toBe(saved);
           yield* Effect.promise(() => NodeFSP.rm(`${filename}.lock`));
+          yield* Effect.promise(async () => {
+            for (const patch of [
+              { sidebarWidth: 21 },
+              { sidebarWidth: 44.5 },
+              { workspaceWidth: 41 },
+              { workspaceWidth: 1001 },
+            ]) {
+              await expect(preferences.update(patch)).rejects.toThrow();
+              expect(await NodeFSP.readFile(filename, "utf8")).toBe(saved);
+            }
+          });
           yield* Effect.promise(() => preferences.update({ wordWrap: false }));
           const damaged = '{"version":1,"settings":{"theme":"invalid-theme"}}';
           yield* Effect.promise(() => NodeFSP.writeFile(filename, damaged));

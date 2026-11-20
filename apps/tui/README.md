@@ -30,6 +30,8 @@ The left sidebar lists threads across projects, using T3's shared pinned and act
 
 Sidebar search and **Ctrl+K** use T3's desktop matching for titles, projects, branches and pull requests. Search spans the selected environment's non-archived shelves; clearing it restores the sidebar filter. Message-history matches appear under **In messages** with a snippet and open find at the matching message. Message search needs a word of at least three letters, or two for Chinese, Japanese and Korean. Press Escape to clear sidebar search.
 
+Drag either sidebar's divider to resize it. For exact widths, right-click a divider, use **Ctrl+P → Panel widths**, or open **Settings → Terminal → Panel widths**. Widths are saved for this terminal client. Smaller windows temporarily constrain them to leave room for the conversation; expanding the window restores your preferred sizes. The right panel also supports automatic sizing. **Reset panel widths** restores both defaults.
+
 | Shortcut | Action                                                                        |
 | -------- | ----------------------------------------------------------------------------- |
 | Ctrl+K   | Switch thread                                                                 |
