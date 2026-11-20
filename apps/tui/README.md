@@ -28,11 +28,13 @@ For local development, start `vp run dev` separately and use the server address 
 
 The left sidebar lists threads across projects, using T3's shared pinned and active ordering. Its filter includes Working, Active, Settled, Snoozed and Archived. The header's **Views** menu switches between conversation, workspace, pull requests, issues, scheduled tasks, settings and browser. Conversation stays central; Changes, Files, Git, Browser, Terminals and Devices can open alongside it on wide terminals or fill the main pane on smaller ones. Right-click a thread for its actions. **Ctrl+P** searches commands, including project creation/settings and server conversation search.
 
+Sidebar search and **Ctrl+K** use T3's desktop matching for titles, projects, branches and pull requests. Search spans the selected environment's non-archived shelves; clearing it restores the sidebar filter. Message-history matches appear under **In messages** with a snippet and open find at the matching message. Message search needs a word of at least three letters, or two for Chinese, Japanese and Korean. Press Escape to clear sidebar search.
+
 | Shortcut | Action                                                                        |
 | -------- | ----------------------------------------------------------------------------- |
 | Ctrl+K   | Switch thread                                                                 |
 | Ctrl+N   | New thread                                                                    |
-| Ctrl+B   | Show/hide sidebar                                                             |
+| Ctrl+B   | Show/hide sidebar; open thread picker in narrow windows                       |
 | Ctrl+E   | Show/hide workspace panel                                                     |
 | Ctrl+T   | Attach the thread's interactive terminal                                      |
 | F6       | Move focus between panes                                                      |

@@ -22,6 +22,13 @@ export interface DialogSelectProps<T> {
   options: readonly DialogSelectOption<T>[];
   current?: T;
   placeholder?: string;
+  onFilterChange?: (query: string) => void;
+  filterOptions?: (
+    options: readonly DialogSelectOption<T>[],
+    query: string,
+  ) => readonly DialogSelectOption<T>[];
+  emptyMessage?: string;
+  status?: string;
   onSelect: (option: DialogSelectOption<T>) => void;
   onCancel: () => void;
 }
@@ -38,9 +45,11 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     ),
   );
   const [offset, setOffset] = createSignal(0);
+  const [selectedValue, setSelectedValue] = createSignal<{ value: T }>();
   const descriptionRows = () => (dimensions().height >= 24 ? 3 : 2);
   const filtered = createMemo(() => {
     const options = props.options.filter((option) => !option.disabled);
+    if (props.filterOptions) return props.filterOptions(options, filter());
     const needle = filter().toLowerCase();
     if (!needle) return options;
     return fuzzysort
@@ -51,7 +60,11 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
       })
       .map((result) => result.obj);
   });
-  const active = createMemo(() => reconcileSelection(selected(), filtered().length));
+  const active = createMemo(() => {
+    const value = selectedValue();
+    const held = value ? filtered().findIndex((option) => option.value === value.value) : -1;
+    return held >= 0 ? held : reconcileSelection(selected(), filtered().length);
+  });
   const limit = createMemo(() =>
     Math.max(
       1,
@@ -59,7 +72,8 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
         18,
         dimensions().height -
           (dimensions().height < 20 ? 8 : 10) -
-          (filtered()[active()]?.description ? descriptionRows() + 1 : 0),
+          (filtered()[active()]?.description ? descriptionRows() + 1 : 0) -
+          (props.status ? 1 : 0),
       ),
     ),
   );
@@ -85,7 +99,12 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 
   function move(delta: number) {
     setOffset(start());
-    setSelected(moveSelection(active(), { count: filtered().length, delta, policy: "wrap" }));
+    select(moveSelection(active(), { count: filtered().length, delta, policy: "wrap" }));
+  }
+  function select(index: number) {
+    setSelected(index);
+    const option = filtered()[index];
+    setSelectedValue(option ? { value: option.value } : undefined);
   }
 
   function submit() {
@@ -99,8 +118,8 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     else if (event.name === "down" || (event.ctrl && event.name === "n")) move(1);
     else if (event.name === "pageup") move(-limit());
     else if (event.name === "pagedown") move(limit());
-    else if (event.name === "home" && event.ctrl) setSelected(0);
-    else if (event.name === "end" && event.ctrl) setSelected(filtered().length - 1);
+    else if (event.name === "home" && event.ctrl) select(0);
+    else if (event.name === "end" && event.ctrl) select(filtered().length - 1);
     else if (event.name === "return") submit();
     else return;
     event.preventDefault();
@@ -122,14 +141,16 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
         cursorColor={theme.primary}
         onInput={(value) => {
           setFilter(value);
+          props.onFilterChange?.(value);
           setSelected(0);
+          setSelectedValue(undefined);
           setOffset(0);
         }}
       />
       <box marginTop={1} flexShrink={0}>
         <Show
           when={visible().length > 0}
-          fallback={<text fg={theme.textMuted}>No matching items</text>}
+          fallback={<text fg={theme.textMuted}>{props.emptyMessage ?? "No matching items"}</text>}
         >
           <For each={visible()}>
             {(option, index) => (
@@ -184,6 +205,11 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
             {filtered()[active()]?.description}
           </text>
         </scrollbox>
+      </Show>
+      <Show when={props.status}>
+        <text height={1} flexShrink={0} fg={theme.textMuted} truncate>
+          {props.status}
+        </text>
       </Show>
       <text marginTop={1} height={1} flexShrink={0} fg={theme.textMuted} truncate>
         {dimensions().width < 80

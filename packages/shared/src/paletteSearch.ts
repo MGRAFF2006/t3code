@@ -1,6 +1,9 @@
 /** Shared ranking keeps command palettes and MCP thread search consistent across surfaces. */
 
-import type { OrchestrationV2ThreadOpens } from "@t3tools/contracts";
+import type {
+  OrchestrationThreadSearchMatch,
+  OrchestrationV2ThreadOpens,
+} from "@t3tools/contracts";
 
 import { WORKTREE_BRANCH_PREFIX } from "./git.ts";
 
@@ -493,7 +496,7 @@ export function messageSearchTokens(query: string): {
  * Matches the query's words side by side as whole words, as typed, whatever
  * whitespace is between them and ignoring case; null for a single word.
  */
-export function messagePhrase(query: string): RegExp | null {
+function messagePhrase(query: string): RegExp | null {
   const { words } = messageSearchTokens(query);
   return words.length > 1
     ? new RegExp(
@@ -1294,4 +1297,38 @@ export function scoreSearchTerms(
       ranges: match.primaryRanges,
     }
   );
+}
+
+/**
+ * The find a message search result opens, at the matched message: the whole
+ * query when the snippet holds it as typed ("vp run dev"), else its longest
+ * word, as the most telling ("sidebar" in "fix sidebar"), written as the
+ * snippet writes it ("Café" for "cafe", since find matches accents).
+ */
+export function findForMessageMatch(
+  match: Pick<OrchestrationThreadSearchMatch, "snippet" | "messageId">,
+  query: string,
+): {
+  readonly query: string;
+  readonly start?: { readonly entryId: string; readonly occurrence: number };
+} {
+  const start = match.messageId ? { start: { entryId: match.messageId, occurrence: 0 } } : {};
+  // Apostrophes are straight in the query; straightening keeps offsets.
+  const together = messagePhrase(query)?.exec(match.snippet.replace(/[\u2018\u2019]/g, "'"));
+  if (together) {
+    return {
+      query: match.snippet.slice(together.index, together.index + together[0].length),
+      ...start,
+    };
+  }
+  const word =
+    messageSearchTokens(query).long.reduce(
+      (longest, token) => (token.length > longest.length ? token : longest),
+      "",
+    ) || query;
+  const ranges = findSearchTokenRanges(match.snippet, word);
+  // A whole word first, as search ranked it: "Café", not "Cafe" in "Cafeteria".
+  const shown =
+    ranges.find((range) => !/[\p{L}\p{N}]/u.test(match.snippet[range.end] ?? "")) ?? ranges[0];
+  return { query: shown ? match.snippet.slice(shown.start, shown.end) : word, ...start };
 }

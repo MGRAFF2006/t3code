@@ -64,6 +64,7 @@ import {
   type ModelSelection,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2SearchThreadsResult,
   type OrchestrationV2ProjectedTurnItem,
   type AssetResource,
   type PullRequestDiffInput,
@@ -627,6 +628,7 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
       workspaceMutationId: null,
     });
     if (id === null) return;
+    const stopFamily = families.mount(registry, requireEnvironment(), ThreadId.make(id));
     const stopState = observe(
       threadAtoms.stateAtom(requireEnvironment(), ThreadId.make(id)),
       (result) => {
@@ -649,6 +651,7 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
     stopThread = () => {
       stopState();
       stopMutation();
+      stopFamily();
     };
   };
   const selectEnvironment = async (id: string) => {
@@ -701,8 +704,21 @@ export async function createTuiClient(options: TuiConnectionOptions = {}) {
     });
     observeEnvironment();
   };
+  let searchRowsMount = 0;
   const client = {
     localStateDirectory: configDir,
+    mountSearchRows: (destination: string, result: OrchestrationV2SearchThreadsResult) => {
+      if (closed || environmentId !== destination || !result.threads?.length) return () => {};
+      const release = families.mountRows(
+        registry,
+        environmentId,
+        `search:${++searchRowsMount}`,
+        Atom.make([{ snapshotSequence: result.snapshotSequence ?? 0, threads: result.threads }]),
+      );
+      return () => {
+        if (!closed) release();
+      };
+    },
     setViewedThread,
     acknowledgeThread: async (id: string) => {
       if (closed || snapshot.selectedThreadId !== id) return;

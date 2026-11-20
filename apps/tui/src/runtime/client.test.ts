@@ -775,6 +775,34 @@ it.effect(
           yield* Effect.promise(() => client.acknowledgeThread(legacyThreadId));
           expect(visits).toHaveLength(beforeLegacy);
           expect(client.snapshot().shell?.threads[0]?.lastVisitedAt).toEqual(at(1));
+          const searchRow = { ...row, id: ThreadId.make("older-search-row") };
+          const read = { matches: [], threads: [searchRow], snapshotSequence: 10 };
+          const releaseSearch = client.mountSearchRows(secondEnvironment, read);
+          expect(
+            client.snapshot().shell?.threads.some((thread) => thread.id === searchRow.id),
+          ).toBe(true);
+          const authoritative = registry.get(shellValues(secondEnvironment));
+          registry.set(shellValues(secondEnvironment), {
+            ...authoritative,
+            removedAt: new Map([...authoritative.removedAt, [searchRow.id, 11]]),
+          });
+          expect(
+            client.snapshot().shell?.threads.some((thread) => thread.id === searchRow.id),
+          ).toBe(false);
+          releaseSearch();
+          const releaseStale = client.mountSearchRows(secondEnvironment, read);
+          expect(
+            client.snapshot().shell?.threads.some((thread) => thread.id === searchRow.id),
+          ).toBe(false);
+          releaseStale();
+          const releaseForeign = client.mountSearchRows(firstEnvironment, {
+            ...read,
+            threads: [{ ...searchRow, id: ThreadId.make("foreign-search-row") }],
+          });
+          expect(
+            client.snapshot().shell?.threads.some((thread) => thread.id === "foreign-search-row"),
+          ).toBe(false);
+          releaseForeign();
           client.close();
           expect(() => client.setViewedThread(legacyThreadId)).not.toThrow();
         }),

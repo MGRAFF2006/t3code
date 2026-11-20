@@ -98,7 +98,12 @@ const runtimeLabels: Record<RuntimeMode, string> = {
 };
 
 function ThreadConversation(
-  props: FeatureProps & { scope: string; projection: () => OrchestrationV2ThreadProjection },
+  props: FeatureProps & {
+    scope: string;
+    projection: () => OrchestrationV2ThreadProjection;
+    searchTarget?: ThreadSearchTarget | undefined;
+    onSearchTargetHandled?: (target: ThreadSearchTarget) => void;
+  },
 ) {
   const dimensions = useTerminalDimensions();
   const renderer = useRenderer();
@@ -438,7 +443,7 @@ function ThreadConversation(
           ((entry.item.type === "user_message" || entry.item.type === "assistant_message") &&
             entry.item.messageId === entryId),
       );
-  async function findInThread(query: string, index = 0) {
+  async function findInThread(query: string, index = 0, entryId?: string) {
     const generation = ++findGeneration;
     const current = () =>
       !disposed &&
@@ -456,7 +461,7 @@ function ThreadConversation(
       const result = await request(props.client, ORCHESTRATION_V2_WS_METHODS.searchThread, {
         threadId: destinationThreadId,
         query: value,
-        index,
+        ...(entryId ? { start: { entryId, occurrence: 0 } } : { index }),
       });
       if (!current()) return;
       setFindResult(result);
@@ -500,6 +505,21 @@ function ThreadConversation(
     setFindResult(null);
     setFinding(false);
   }
+  let handledSearchTarget: ThreadSearchTarget | undefined;
+  // Search navigation synchronizes the opened conversation with its server-owned message history.
+  createEffect(() => {
+    const target = props.searchTarget;
+    if (
+      !target ||
+      target === handledSearchTarget ||
+      target.environmentId !== environmentId ||
+      target.threadId !== destinationThreadId
+    )
+      return;
+    handledSearchTarget = target;
+    props.onSearchTargetHandled?.(target);
+    void props.ui.run(() => findInThread(target.query, 0, target.messageId));
+  });
   function savedPrompts() {
     const guard = () => {
       if (
@@ -2063,7 +2083,19 @@ function ThreadConversation(
   );
 }
 
-export function ConversationPanel(props: FeatureProps) {
+export interface ThreadSearchTarget {
+  environmentId: string;
+  threadId: string;
+  query: string;
+  messageId?: string;
+}
+
+export function ConversationPanel(
+  props: FeatureProps & {
+    searchTarget?: ThreadSearchTarget | undefined;
+    onSearchTargetHandled?: (target: ThreadSearchTarget) => void;
+  },
+) {
   const scope = () =>
     props.state()?.thread
       ? `${props.state()?.environmentId}/${props.state()?.thread?.thread.id}`
